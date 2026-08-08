@@ -1,60 +1,175 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#2D2436"/>
-      <stop offset="100%" stop-color="#1a1420"/>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 256 256"
+   version="1.1"
+   id="svg13"
+   sodipodi:docname="icon.svg"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview13"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="2.317432"
+     inkscape:cx="142.61476"
+     inkscape:cy="173.25212"
+     inkscape:current-layer="g14" />
+  <defs
+     id="defs6">
+    <linearGradient
+       id="linearGradient15"
+       inkscape:collect="always">
+      <stop
+         style="stop-color:#47756b;stop-opacity:1;"
+         offset="0"
+         id="stop15" />
+      <stop
+         style="stop-color:#47756b;stop-opacity:0;"
+         offset="1"
+         id="stop16" />
     </linearGradient>
-    <linearGradient id="lens" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#BB86FC"/>
-      <stop offset="100%" stop-color="#7C4DFF"/>
+    <linearGradient
+       id="bg"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#2D2436"
+         id="stop1" />
+      <stop
+         offset="100%"
+         stop-color="#1a1420"
+         id="stop2" />
     </linearGradient>
-    <linearGradient id="glow" x1="0.5" y1="0" x2="0.5" y2="1">
-      <stop offset="0%" stop-color="#BB86FC" stop-opacity="0.3"/>
-      <stop offset="100%" stop-color="#7C4DFF" stop-opacity="0.1"/>
+    <linearGradient
+       id="lens"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#BB86FC"
+         id="stop3" />
+      <stop
+         offset="100%"
+         stop-color="#7C4DFF"
+         id="stop4" />
     </linearGradient>
+    <linearGradient
+       id="glow"
+       x1="0.5"
+       y1="0"
+       x2="0.5"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#BB86FC"
+         stop-opacity="0.3"
+         id="stop5" />
+      <stop
+         offset="100%"
+         stop-color="#7C4DFF"
+         stop-opacity="0.1"
+         id="stop6" />
+    </linearGradient>
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient15"
+       id="radialGradient16"
+       cx="133.98032"
+       cy="167.07809"
+       fx="133.98032"
+       fy="167.07809"
+       r="72.692764"
+       gradientTransform="matrix(-0.8792657,-1.7937701,0.97834727,-0.4795639,88.324214,493.3337)"
+       gradientUnits="userSpaceOnUse" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient15"
+       id="radialGradient17"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1.9974967,-0.02695144,0.01001825,0.74249601,-235.35263,177.39804)"
+       cx="133.584"
+       cy="92.244514"
+       fx="133.584"
+       fy="92.244514"
+       r="72.692764" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient15"
+       id="radialGradient18"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(-0.8792657,-1.7937701,0.97834727,-0.4795639,88.324214,493.3337)"
+       cx="133.98032"
+       cy="167.07809"
+       fx="133.98032"
+       fy="167.07809"
+       r="72.692764" />
+    <radialGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient15"
+       id="radialGradient19"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(-0.8792657,-1.7937701,0.97834727,-0.4795639,88.324214,493.3337)"
+       cx="133.98032"
+       cy="167.07809"
+       fx="133.98032"
+       fy="167.07809"
+       r="72.692764" />
   </defs>
-
   <!-- Rounded square background -->
-  <rect x="8" y="8" width="240" height="240" rx="48" ry="48" fill="url(#bg)"/>
-
+  <rect
+     x="8"
+     y="8"
+     width="240"
+     height="240"
+     rx="48"
+     ry="48"
+     fill="url(#bg)"
+     id="rect6" />
   <!-- Glow behind lens -->
-  <circle cx="126" cy="122" r="72" fill="url(#glow)"/>
-
   <!-- Magnifying glass handle -->
-  <rect x="166" y="162" width="32" height="72" rx="10" ry="10"
-        fill="#BB86FC" transform="rotate(-45 182 198)"
-        opacity="0.9"/>
-
   <!-- Magnifying glass outer ring -->
-  <circle cx="126" cy="122" r="56" fill="none" stroke="url(#lens)"
-          stroke-width="10" stroke-linecap="round"/>
-
   <!-- Lens glass -->
-  <circle cx="126" cy="122" r="52" fill="#BB86FC" fill-opacity="0.15"/>
-
   <!-- Light reflection on lens -->
-  <ellipse cx="110" cy="105" rx="18" ry="12" fill="white" opacity="0.2"
-           transform="rotate(-30 110 105)"/>
-
   <!-- File document icon inside the lens -->
-  <rect x="106" y="102" width="48" height="58" rx="6" ry="6"
-        fill="#E0D7F5" stroke="#BB86FC" stroke-width="2.5"/>
-
   <!-- Document lines -->
-  <line x1="116" y1="118" x2="144" y2="118" stroke="#BB86FC"
-        stroke-width="3.5" stroke-linecap="round"/>
-  <line x1="116" y1="130" x2="144" y2="130" stroke="#BB86FC"
-        stroke-width="3.5" stroke-linecap="round"/>
-  <line x1="116" y1="142" x2="134" y2="142" stroke="#BB86FC"
-        stroke-width="3.5" stroke-linecap="round" opacity="0.5"/>
-
   <!-- Small F letter on file tab -->
-  <text x="115" y="113" font-family="sans-serif" font-size="14"
-        font-weight="bold" fill="#7C4DFF">f</text>
-
   <!-- Dots / sparkles -->
-  <circle cx="50" cy="60" r="4" fill="#BB86FC" opacity="0.6"/>
-  <circle cx="210" cy="70" r="3" fill="#BB86FC" opacity="0.4"/>
-  <circle cx="60" cy="190" r="3" fill="#BB86FC" opacity="0.3"/>
-  <circle cx="205" cy="175" r="2.5" fill="#7C4DFF" opacity="0.5"/>
+  <g
+     id="g14"
+     transform="translate(33.498848,25.693823)"
+     style="fill-opacity:1;fill:url(#radialGradient16)">
+    <g
+       id="g17"
+       style="fill:url(#radialGradient19)"
+       transform="translate(-12.850284,-18.821764)">
+      <circle
+         style="fill:url(#radialGradient18);fill-opacity:1;stroke:#bdd48d;stroke-width:0;stroke-linejoin:bevel;stroke-miterlimit:0;stroke-dasharray:none;paint-order:stroke fill markers"
+         id="path14"
+         cx="94.501152"
+         cy="95.795685"
+         r="72.692764" />
+      <rect
+         style="fill:url(#radialGradient17);fill-opacity:1;stroke:#bdd48d;stroke-width:0;stroke-linejoin:bevel;stroke-miterlimit:0;stroke-dasharray:none;paint-order:stroke fill markers"
+         id="rect14"
+         width="34.520969"
+         height="83.713348"
+         x="15.144616"
+         y="158.57559"
+         transform="rotate(-30)" />
+    </g>
+  </g>
 </svg>
