@@ -8,6 +8,12 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
         .show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    if ui.button("Open settings").clicked() {
+                        if let Some(path) = crate::types::config_path() {
+                            let _ = open::that(path);
+                        }
+                        ui.close_menu();
+                    }
                     if ui.button("Restart").clicked() {
                         let current_exe =
                             std::env::current_exe().unwrap_or_default();
