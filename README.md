@@ -17,5 +17,10 @@ A graphical file finder, on top of fd
 ## Download
 [Linux](https://github.com/plucafs/fdthing/releases/download/v0.1.0/fdthing-linux)
 
+## Credits
+[fd](https://github.com/sharkdp/fd)
+[pi](https://github.com/earendil-works/pi)
+[OpenCode](https://github.com/anomalyco/opencode)
+
 ## License
 MIT
