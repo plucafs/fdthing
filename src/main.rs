@@ -225,7 +225,7 @@ fn default_ui_scale() -> f32 {
 }
 
 fn config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("fd-gui").join("config.json"))
+    dirs::config_dir().map(|d| d.join("fdthing").join("config.json"))
 }
 
 fn load_config() -> Option<PersistedConfig> {
@@ -307,9 +307,6 @@ struct FdGuiApp {
     /// (dir_id, new_enabled) to apply after the iteration (avoid borrow issues)
     pending_enable: Vec<(u64, bool)>,
     show_about: bool,
-    /// Keyboard navigation in results
-    selected_idx: Option<usize>,
-    focus_results: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -372,8 +369,6 @@ impl FdGuiApp {
             focus_after_search: Some(FocusTarget::Pattern),
             pending_enable: Vec::new(),
             show_about: false,
-            selected_idx: None,
-            focus_results: false,
         };
 
         if let Some(cfg) = load_config() {
@@ -674,12 +669,12 @@ impl eframe::App for FdGuiApp {
 
         // ── About dialog ──────────────────────────────────────────────────
         if self.show_about {
-            egui::Window::new("About fd-gui")
+            egui::Window::new("About fdthing")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.heading("fd-gui");
+                    ui.heading("fdthing");
                     ui.label("A graphical file finder for fd.");
                     ui.label(format!(
                         "Version {}",
@@ -842,67 +837,6 @@ impl eframe::App for FdGuiApp {
                             .id(ext_id)
                             .hint_text("rs, py, txt…"),
                     );
-                    // Autocomplete popup
-                    let popup_id = egui::Id::new("ext_popup");
-                    let ext_has_focus = ui.memory_mut(|mem| mem.has_focus(ext_id));
-                    if ext_has_focus && !self.ext_filter.is_empty() {
-                        let token = self
-                            .ext_filter
-                            .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
-                            .last()
-                            .unwrap_or("")
-                            .trim()
-                            .to_lowercase();
-                        if !token.is_empty() {
-                            let mut suggestions: Vec<String> = self
-                                .results
-                                .iter()
-                                .filter_map(|e| e.path.extension().and_then(|x| x.to_str()))
-                                .map(|e| e.to_lowercase())
-                                .filter(|e| e.starts_with(&token))
-                                .collect();
-                            suggestions.sort();
-                            suggestions.dedup();
-                            // Open or keep open the popup
-                            ui.memory_mut(|mem| mem.open_popup(popup_id));
-                            egui::popup_below_widget(
-                                ui,
-                                popup_id,
-                                &ext_resp,
-                                egui::PopupCloseBehavior::CloseOnClickOutside,
-                                |ui| {
-                                    if suggestions.is_empty() {
-                                        ui.label("No extensions found (run a search first)");
-                                    } else {
-                                        ScrollArea::vertical()
-                                            .max_height(150.0)
-                                            .show(ui, |ui| {
-                                                for s in suggestions.iter().take(8) {
-                                                    if ui.button(s.as_str()).clicked() {
-                                                        let prefix: String = self
-                                                            .ext_filter
-                                                            .trim_end_matches(&token)
-                                                            .to_string();
-                                                        self.ext_filter = if prefix.is_empty() {
-                                                            s.clone()
-                                                        } else {
-                                                            format!("{prefix}{s}")
-                                                        };
-                                                        ui.memory_mut(|mem| {
-                                                            mem.request_focus(ext_id);
-                                                            mem.close_popup();
-                                                        });
-                                                    }
-                                                }
-                                            });
-                                    }
-                                },
-                            );
-                        }
-                    } else {
-                        // Close popup when ext loses focus
-                        ui.memory_mut(|mem| mem.close_popup());
-                    }
                     if ext_resp.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {
@@ -1658,13 +1592,13 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 640.0])
-            .with_title("fd-gui — a graphical file finder")
+            .with_title("fdthing — a graphical file finder")
             .with_icon(std::sync::Arc::new(icon)),
         ..Default::default()
     };
 
     eframe::run_native(
-        "fd-gui",
+        "fdthing",
         options,
         Box::new(|cc| {
             let app = FdGuiApp::new();
