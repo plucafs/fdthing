@@ -6,6 +6,7 @@ use std::thread;
 
 use eframe::egui;
 use egui::{Color32, CursorIcon, ScrollArea, Sense};
+use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -33,10 +34,10 @@ impl SortOrder {
     fn label(self) -> &'static str {
         match self {
             SortOrder::None => "As found",
-            SortOrder::NameAsc => "Name ↑",
-            SortOrder::NameDesc => "Name ↓",
-            SortOrder::PathAsc => "Path ↑",
-            SortOrder::PathDesc => "Path ↓",
+            SortOrder::NameAsc => "Name (Asc)",
+            SortOrder::NameDesc => "Name (Des)",
+            SortOrder::PathAsc => "Path (Asc)",
+            SortOrder::PathDesc => "Path (Des)",
         }
     }
 }
@@ -68,6 +69,8 @@ struct PersistedConfig {
     ext_filter: String,
     sort_order: SortOrder,
     // serde(default) keeps configs written by older versions loadable
+    #[serde(default)]
+    exclude_filter: String,
     #[serde(default = "default_ui_scale")]
     ui_scale: f32,
 }
@@ -106,6 +109,7 @@ struct FdGuiApp {
     follow_symlinks: bool,
     respect_ignorefiles: bool,
     ext_filter: String,
+    exclude_filter: String,
 
     // ── Results presentation ─────────────────────────────────────────────
     sort_order: SortOrder,
@@ -113,6 +117,7 @@ struct FdGuiApp {
 
     // ── Appearance ───────────────────────────────────────────────────────
     ui_scale: f32,
+    light_mode: bool,
 
     // ── Search runtime state ─────────────────────────────────────────────
     results: Vec<(PathBuf, bool)>, // (path, is_dir)
@@ -140,9 +145,11 @@ impl FdGuiApp {
             follow_symlinks: false,
             respect_ignorefiles: true,
             ext_filter: String::new(),
+            exclude_filter: String::new(),
             sort_order: SortOrder::None,
             needs_sort: false,
             ui_scale: 1.0,
+            light_mode: false,
             results: Vec::new(),
             search_status: SearchStatus::Idle,
             cancel_flag: None,
@@ -162,6 +169,7 @@ impl FdGuiApp {
             app.follow_symlinks = cfg.follow_symlinks;
             app.respect_ignorefiles = cfg.respect_ignorefiles;
             app.ext_filter = cfg.ext_filter;
+            app.exclude_filter = cfg.exclude_filter;
             app.sort_order = cfg.sort_order;
             app.ui_scale = cfg.ui_scale;
         }
@@ -182,6 +190,7 @@ impl FdGuiApp {
             follow_symlinks: self.follow_symlinks,
             respect_ignorefiles: self.respect_ignorefiles,
             ext_filter: self.ext_filter.clone(),
+            exclude_filter: self.exclude_filter.clone(),
             sort_order: self.sort_order,
             ui_scale: self.ui_scale,
         };
@@ -259,6 +268,24 @@ impl FdGuiApp {
         builder.git_exclude(self.respect_ignorefiles);
         builder.ignore(self.respect_ignorefiles);
         builder.max_depth(None); // no limit, like fd default
+
+        // Exclude patterns (like fd -E)
+        let exclude_globs: Vec<&str> = self
+            .exclude_filter
+            .split(|c: char| c == ',' || c == ';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !exclude_globs.is_empty() {
+            let mut ov = OverrideBuilder::new(".");
+            for glob in &exclude_globs {
+                // `!` prefix means "ignore" in Override semantics
+                let _ = ov.add(&format!("!{}", glob));
+            }
+            if let Ok(ov) = ov.build() {
+                builder.overrides(ov);
+            }
+        }
 
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel_flag = Some(cancel.clone());
@@ -364,6 +391,13 @@ impl eframe::App for FdGuiApp {
         // also change it with Ctrl + / Ctrl - / Ctrl 0 keyboard shortcuts)
         self.ui_scale = ctx.zoom_factor();
 
+        // Apply theme
+        ctx.set_visuals(if self.light_mode {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        });
+
         // Drain results from the search thread every frame
         self.collect_results();
         if self.needs_sort {
@@ -445,7 +479,19 @@ impl eframe::App for FdGuiApp {
                     }
 
                     ui.separator();
-                    ui.label("Scale:");
+                    ui.label("Exclude:");
+                    let excl_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.exclude_filter)
+                            .hint_text("target, *.log…")
+                            .desired_width(120.0),
+                    );
+                    if excl_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        self.start_search();
+                    }
+
+                    ui.separator();
+                    ui.label("UI Scale:");
                     if ui
                         .add(
                             egui::DragValue::new(&mut self.ui_scale)
@@ -459,6 +505,26 @@ impl eframe::App for FdGuiApp {
                         ctx.set_zoom_factor(self.ui_scale);
                         self.save_config();
                     }
+
+                    ui.separator();
+                    let theme_label = if self.light_mode { "Light" } else { "Dark" };
+                    egui::ComboBox::from_id_salt("theme_combo")
+                        .selected_text(format!("Theme: {theme_label}"))
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_value(&mut self.light_mode, false, "Dark")
+                                .clicked()
+                                || ui
+                                    .selectable_value(
+                                        &mut self.light_mode,
+                                        true,
+                                        "Light",
+                                    )
+                                    .clicked()
+                            {
+                                self.save_config();
+                            }
+                        });
                 });
             });
         });
@@ -467,7 +533,7 @@ impl eframe::App for FdGuiApp {
         egui::SidePanel::left("dir_panel")
             .min_width(260.0)
             .show(ctx, |ui| {
-                ui.heading("📁 Search Directories");
+                ui.heading("Search Directories");
                 ui.separator();
 
                 // Add new directory
@@ -477,7 +543,7 @@ impl eframe::App for FdGuiApp {
                             .hint_text("Path…")
                             .desired_width(160.0),
                     );
-                    if ui.button("📂 Browse…").clicked() {
+                    if ui.button("Browse…").clicked() {
                         // Native folder picker (blocks the UI thread but
                         // runs its own event loop on most platforms)
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -486,7 +552,7 @@ impl eframe::App for FdGuiApp {
                     }
                 });
 
-                if ui.button("➕ Add").clicked() && !self.new_dir_path.trim().is_empty() {
+                if ui.button("Add").clicked() && !self.new_dir_path.trim().is_empty() {
                     let p = PathBuf::from(self.new_dir_path.trim());
                     if p.is_dir() && !self.directories.iter().any(|d| d.path == p) {
                         self.directories.push(SearchDirectory {
@@ -700,6 +766,11 @@ fn main() -> Result<(), eframe::Error> {
             let app = FdGuiApp::new();
             // Apply the persisted UI scale at startup
             cc.egui_ctx.set_zoom_factor(app.ui_scale);
+            cc.egui_ctx.set_visuals(if app.light_mode {
+                egui::Visuals::light()
+            } else {
+                egui::Visuals::dark()
+            });
             Ok(Box::new(app))
         }),
     )
