@@ -1086,37 +1086,6 @@ impl eframe::App for FdGuiApp {
                 {
                     self.save_config();
                 }
-
-                // Quick toggles
-                if self.dir_tree.total_dirs() > 0 {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("All ON").clicked() {
-                            for d in &mut self.dir_tree.free {
-                                d.enabled = true;
-                            }
-                            for g in &mut self.dir_tree.groups {
-                                g.enabled = true;
-                                for d in &mut g.dirs {
-                                    d.enabled = true;
-                                }
-                            }
-                            self.save_config();
-                        }
-                        if ui.button("All OFF").clicked() {
-                            for d in &mut self.dir_tree.free {
-                                d.enabled = false;
-                            }
-                            for g in &mut self.dir_tree.groups {
-                                g.enabled = false;
-                                for d in &mut g.dirs {
-                                    d.enabled = false;
-                                }
-                            }
-                            self.save_config();
-                        }
-                    });
-                }
             });
 
         // ── Central area ──────────────────────────────────────────────────
