@@ -306,6 +306,10 @@ struct FdGuiApp {
     focus_after_search: Option<FocusTarget>,
     /// (dir_id, new_enabled) to apply after the iteration (avoid borrow issues)
     pending_enable: Vec<(u64, bool)>,
+    show_about: bool,
+    /// Keyboard navigation in results
+    selected_idx: Option<usize>,
+    focus_results: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -367,6 +371,9 @@ impl FdGuiApp {
             info_message: None,
             focus_after_search: Some(FocusTarget::Pattern),
             pending_enable: Vec::new(),
+            show_about: false,
+            selected_idx: None,
+            focus_results: false,
         };
 
         if let Some(cfg) = load_config() {
@@ -643,6 +650,48 @@ impl eframe::App for FdGuiApp {
             ctx.send_viewport_cmd(egui::viewport::ViewportCommand::Close);
         }
 
+        // ── Menu bar ─────────────────────────────────────────────────────
+        egui::TopBottomPanel::top("menu_bar")
+            .min_height(0.0)
+            .show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(
+                            egui::viewport::ViewportCommand::Close,
+                        );
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About").clicked() {
+                        self.show_about = true;
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+
+        // ── About dialog ──────────────────────────────────────────────────
+        if self.show_about {
+            egui::Window::new("About fd-gui")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading("fd-gui");
+                    ui.label("A graphical file finder for fd.");
+                    ui.label(format!(
+                        "Version {}",
+                        env!("CARGO_PKG_VERSION")
+                    ));
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        self.show_about = false;
+                    }
+                });
+        }
+
         // Apply any deferred enable toggles from the dir tree UI
         let pending = std::mem::take(&mut self.pending_enable);
         for (dir_id, on) in pending {
@@ -794,6 +843,7 @@ impl eframe::App for FdGuiApp {
                             .hint_text("rs, py, txt…"),
                     );
                     // Autocomplete popup
+                    let popup_id = egui::Id::new("ext_popup");
                     let ext_has_focus = ui.memory_mut(|mem| mem.has_focus(ext_id));
                     if ext_has_focus && !self.ext_filter.is_empty() {
                         let token = self
@@ -813,13 +863,17 @@ impl eframe::App for FdGuiApp {
                                 .collect();
                             suggestions.sort();
                             suggestions.dedup();
-                            if !suggestions.is_empty() {
-                                egui::popup_below_widget(
-                                    ui,
-                                    egui::Id::new("ext_popup"),
-                                    &ext_resp,
-                                    egui::PopupCloseBehavior::IgnoreClicks,
-                                    |ui| {
+                            // Open or keep open the popup
+                            ui.memory_mut(|mem| mem.open_popup(popup_id));
+                            egui::popup_below_widget(
+                                ui,
+                                popup_id,
+                                &ext_resp,
+                                egui::PopupCloseBehavior::CloseOnClickOutside,
+                                |ui| {
+                                    if suggestions.is_empty() {
+                                        ui.label("No extensions found (run a search first)");
+                                    } else {
                                         ScrollArea::vertical()
                                             .max_height(150.0)
                                             .show(ui, |ui| {
@@ -836,14 +890,18 @@ impl eframe::App for FdGuiApp {
                                                         };
                                                         ui.memory_mut(|mem| {
                                                             mem.request_focus(ext_id);
+                                                            mem.close_popup();
                                                         });
                                                     }
                                                 }
                                             });
-                                    },
-                                );
-                            }
+                                    }
+                                },
+                            );
                         }
+                    } else {
+                        // Close popup when ext loses focus
+                        ui.memory_mut(|mem| mem.close_popup());
                     }
                     if ext_resp.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -1045,14 +1103,20 @@ impl eframe::App for FdGuiApp {
                             // Full-width horizontal for drop target
                             let full_resp = ui
                                 .horizontal(|ui| {
-                                    ui.add(
+                                    let collapse_btn = ui.add(
                                         egui::Label::new(if collapsed {
-                                            "▶"
+                                            "[+]"
                                         } else {
-                                            "▼"
+                                            "[-]"
                                         })
+                                        .sense(Sense::click())
                                         .selectable(false),
-                                    );
+                                    )
+                                    .on_hover_cursor(CursorIcon::PointingHand);
+                                    if collapse_btn.clicked() {
+                                        new_collapsed
+                                            .push((gi, !group.collapsed));
+                                    }
                                     if ui
                                         .checkbox(&mut g_on, "")
                                         .changed()
@@ -1102,10 +1166,6 @@ impl eframe::App for FdGuiApp {
                                 }
                             }
 
-                            if full_resp.clicked() {
-                                new_collapsed
-                                    .push((gi, !group.collapsed));
-                            }
                             if del_group {
                                 remove_group.push(gi);
                                 continue;
@@ -1317,27 +1377,28 @@ impl eframe::App for FdGuiApp {
             let separator_w = 15.0; // ≈ width of `ui.separator()`
             let row_w = name_w + path_w + size_w + date_w + separator_w * 3.0 + 20.0;
 
-            // ── Column headers (compact, font height only) ────────────
+            // ── Column headers (only for table views) ─────────────────
+            if self.result_view != ResultView::Simple {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                 let (r, _) = ui.allocate_exact_size(
                     egui::vec2(name_w, 0.0),
                     Sense::hover(),
                 );
                 ui.put(r, egui::Label::new("Name").selectable(false));
-                ui.separator();
+                // ui.separator();
                 let (r, _) = ui.allocate_exact_size(
                     egui::vec2(path_w, 0.0),
                     Sense::hover(),
                 );
                 ui.put(r, egui::Label::new("Path").selectable(false));
-                ui.separator();
+                // ui.separator();
                 let (r, _) = ui.allocate_exact_size(
                     egui::vec2(size_w, 0.0),
                     Sense::hover(),
                 );
                 ui.put(r, egui::Label::new("Size").selectable(false));
-                ui.separator();
+                // ui.separator();
                 let (r, _) = ui.allocate_exact_size(
                     egui::vec2(date_w, 0.0),
                     Sense::hover(),
@@ -1345,6 +1406,7 @@ impl eframe::App for FdGuiApp {
                 ui.put(r, egui::Label::new("Modified").selectable(false));
             });
             ui.separator();
+            } // end column headers (only Aligned/Fluid)
 
             let mut open_path: Option<PathBuf> = None;
             let mut open_parent: Option<PathBuf> = None;
