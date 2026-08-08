@@ -15,16 +15,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 enum SortOrder {
-    None,
     NameAsc,
     NameDesc,
     PathAsc,
+    #[serde(other)]
     PathDesc,
 }
 
 impl SortOrder {
-    const ALL: [SortOrder; 5] = [
-        SortOrder::None,
+    const ALL: [SortOrder; 4] = [
         SortOrder::NameAsc,
         SortOrder::NameDesc,
         SortOrder::PathAsc,
@@ -33,7 +32,6 @@ impl SortOrder {
 
     fn label(self) -> &'static str {
         match self {
-            SortOrder::None => "As found",
             SortOrder::NameAsc => "Name (Asc)",
             SortOrder::NameDesc => "Name (Des)",
             SortOrder::PathAsc => "Path (Asc)",
@@ -64,6 +62,7 @@ struct PersistedConfig {
     case_sensitive: bool,
     use_regex: bool,
     show_hidden: bool,
+    dirs_only: bool,
     follow_symlinks: bool,
     respect_ignorefiles: bool,
     ext_filter: String,
@@ -106,6 +105,7 @@ struct FdGuiApp {
     case_sensitive: bool,
     use_regex: bool,
     show_hidden: bool,
+    dirs_only: bool,
     follow_symlinks: bool,
     respect_ignorefiles: bool,
     ext_filter: String,
@@ -126,6 +126,16 @@ struct FdGuiApp {
     result_receiver: Option<mpsc::Receiver<(PathBuf, bool)>>,
     error_message: Option<String>,
     info_message: Option<String>,
+
+    // ── UI state ─────────────────────────────────────────────────────────
+    focus_after_search: Option<FocusTarget>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FocusTarget {
+    Pattern,
+    Ext,
+    Exclude,
 }
 
 impl FdGuiApp {
@@ -142,11 +152,12 @@ impl FdGuiApp {
             case_sensitive: false,
             use_regex: false,
             show_hidden: false,
+            dirs_only: false,
             follow_symlinks: false,
             respect_ignorefiles: true,
             ext_filter: String::new(),
             exclude_filter: String::new(),
-            sort_order: SortOrder::None,
+            sort_order: SortOrder::PathAsc,
             needs_sort: false,
             ui_scale: 1.0,
             light_mode: false,
@@ -156,6 +167,7 @@ impl FdGuiApp {
             result_receiver: None,
             error_message: None,
             info_message: None,
+            focus_after_search: Some(FocusTarget::Pattern),
         };
 
         // Restore persisted state (overrides defaults — an empty saved
@@ -166,6 +178,7 @@ impl FdGuiApp {
             app.case_sensitive = cfg.case_sensitive;
             app.use_regex = cfg.use_regex;
             app.show_hidden = cfg.show_hidden;
+            app.dirs_only = cfg.dirs_only;
             app.follow_symlinks = cfg.follow_symlinks;
             app.respect_ignorefiles = cfg.respect_ignorefiles;
             app.ext_filter = cfg.ext_filter;
@@ -187,6 +200,7 @@ impl FdGuiApp {
             case_sensitive: self.case_sensitive,
             use_regex: self.use_regex,
             show_hidden: self.show_hidden,
+            dirs_only: self.dirs_only,
             follow_symlinks: self.follow_symlinks,
             respect_ignorefiles: self.respect_ignorefiles,
             ext_filter: self.ext_filter.clone(),
@@ -296,6 +310,7 @@ impl FdGuiApp {
         let pattern = self.pattern.clone();
         let pattern_lower = pattern.to_lowercase();
         let case_sensitive = self.case_sensitive;
+        let dirs_only = self.dirs_only;
 
         // Run the walker on a background thread
         thread::spawn(move || {
@@ -335,6 +350,9 @@ impl FdGuiApp {
                         if hit {
                             let is_dir =
                                 entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                            if dirs_only && !is_dir {
+                                continue;
+                            }
                             let _ = tx.send((path.to_path_buf(), is_dir));
                         }
                     }
@@ -344,6 +362,7 @@ impl FdGuiApp {
         });
 
         self.search_status = SearchStatus::Searching;
+        // focus stays on whichever field triggered the search
         self.save_config(); // persist options + pattern on every search
     }
 
@@ -368,7 +387,6 @@ impl FdGuiApp {
 
     fn apply_sort(&mut self) {
         match self.sort_order {
-            SortOrder::None => {} // keep insertion order
             SortOrder::NameAsc => self.results.sort_by_key(|(p, _)| file_name_key(p)),
             SortOrder::NameDesc => self
                 .results
@@ -410,14 +428,26 @@ impl eframe::App for FdGuiApp {
             ctx.request_repaint();
         }
 
+        // Ctrl+Q quits
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {
+            ctx.send_viewport_cmd(egui::viewport::ViewportCommand::Close);
+        }
+
         // ── Top bar: search input + options ──────────────────────────────
         egui::TopBottomPanel::top("search_bar").show(ctx, |ui| {
+            // Declare widget IDs up front so the deferred-focus block at
+            // the bottom of this panel can reference them.
+            let pattern_id = egui::Id::new("pattern_input");
+            let ext_id = egui::Id::new("ext_textedit");
+            let excl_id = egui::Id::new("exclude_input");
+
             ui.vertical(|ui| {
                 // Row 0: pattern + action buttons
                 ui.horizontal(|ui| {
                     ui.label("🔍");
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.pattern)
+                            .id(pattern_id)
                             .hint_text("Search pattern (file name)…")
                             .desired_width(300.0),
                     );
@@ -426,6 +456,7 @@ impl eframe::App for FdGuiApp {
                         && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
                     if ui.button("Search").clicked() || enter_pressed {
+                        self.focus_after_search = Some(FocusTarget::Pattern);
                         self.start_search();
                     }
 
@@ -448,7 +479,7 @@ impl eframe::App for FdGuiApp {
                     }
                 });
 
-                // Row 1: option toggles + extension filter
+                // Row 1: option toggles + scale + theme
                 ui.horizontal(|ui| {
                     let mut opts_changed = false;
                     opts_changed |= ui
@@ -456,6 +487,7 @@ impl eframe::App for FdGuiApp {
                         .changed();
                     opts_changed |= ui.checkbox(&mut self.use_regex, ".* regex").changed();
                     opts_changed |= ui.checkbox(&mut self.show_hidden, "Hidden").changed();
+                    opts_changed |= ui.checkbox(&mut self.dirs_only, "Dirs").changed();
                     opts_changed |= ui
                         .checkbox(&mut self.follow_symlinks, "Symlinks")
                         .changed();
@@ -464,30 +496,6 @@ impl eframe::App for FdGuiApp {
                         .changed();
                     if opts_changed {
                         self.save_config();
-                    }
-
-                    ui.separator();
-                    ui.label("Ext:");
-                    let ext_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.ext_filter)
-                            .hint_text("rs, py, txt…")
-                            .desired_width(110.0),
-                    );
-                    if ext_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
-                        self.start_search();
-                    }
-
-                    ui.separator();
-                    ui.label("Exclude:");
-                    let excl_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.exclude_filter)
-                            .hint_text("target, *.log…")
-                            .desired_width(120.0),
-                    );
-                    if excl_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
-                        self.start_search();
                     }
 
                     ui.separator();
@@ -526,6 +534,129 @@ impl eframe::App for FdGuiApp {
                             }
                         });
                 });
+
+                // Row 2: Ext + Exclude at full width with autocomplete
+                ui.horizontal(|ui| {
+                    ui.label("Ext:");
+                    let ext_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.ext_filter)
+                            .id(ext_id)
+                            .hint_text("rs, py, txt…"),
+                    );
+
+                    // Autocomplete popup for Ext
+                    let ext_has_focus =
+                        ui.memory_mut(|mem| mem.has_focus(ext_id));
+                    if ext_has_focus && !self.ext_filter.is_empty() {
+                        let token = self
+                            .ext_filter
+                            .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+                            .last()
+                            .unwrap_or("")
+                            .trim()
+                            .to_lowercase();
+
+                        if !token.is_empty() {
+                            let mut suggestions: Vec<String> = self
+                                .results
+                                .iter()
+                                .filter_map(|(p, _)| {
+                                    p.extension().and_then(|e| e.to_str())
+                                })
+                                .map(|e| e.to_lowercase())
+                                .filter(|e| e.starts_with(&token))
+                                .collect();
+                            suggestions.sort();
+                            suggestions.dedup();
+
+                            if !suggestions.is_empty() {
+                                let popup_id =
+                                    egui::Id::new("ext_popup");
+                                egui::popup_below_widget(
+                                    ui,
+                                    popup_id,
+                                    &ext_resp,
+                                    egui::PopupCloseBehavior::IgnoreClicks,
+                                    |ui| {
+                                        egui::ScrollArea::vertical()
+                                            .max_height(150.0)
+                                            .show(ui, |ui| {
+                                                for s in
+                                                    suggestions.iter().take(8)
+                                                {
+                                                    if ui
+                                                        .button(s.as_str())
+                                                        .clicked()
+                                                    {
+                                                        // Replace the last
+                                                        // segment with the
+                                                        // chosen extension
+                                                        let prefix: String =
+                                                            self
+                                                                .ext_filter
+                                                                .trim_end_matches(
+                                                                    &token,
+                                                                )
+                                                                .to_string();
+                                                        let new_val =
+                                                            if prefix
+                                                                .is_empty()
+                                                            {
+                                                                s.clone()
+                                                            } else {
+                                                                format!(
+                                                                    "{prefix}{s}"
+                                                                )
+                                                            };
+                                                        self.ext_filter =
+                                                            new_val;
+                                                        ui.memory_mut(
+                                                            |mem| {
+                                                                mem.request_focus(
+                                                                    ext_id,
+                                                                );
+                                                            });
+                                                    }
+                                                }
+                                            });
+                                    },
+                                );
+                            }
+                        }
+                    }
+
+                    if ext_resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        self.focus_after_search = Some(FocusTarget::Ext);
+                        self.start_search();
+                    }
+
+                    ui.label("Exclude:");
+                    let excl_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.exclude_filter)
+                            .id(excl_id)
+                            .hint_text("target, *.log…"),
+                    );
+                    if excl_resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        self.focus_after_search = Some(FocusTarget::Exclude);
+                        self.start_search();
+                    }
+                });
+
+                // Apply deferred focus (after all TextEdit widgets exist)
+                // so that both Enter and button-click search work correctly.
+                if let Some(ref target) = self.focus_after_search {
+                    let id = match target {
+                        FocusTarget::Pattern => pattern_id,
+                        FocusTarget::Ext => ext_id,
+                        FocusTarget::Exclude => excl_id,
+                    };
+                    ui.memory_mut(|mem| mem.request_focus(id));
+                    self.focus_after_search = None;
+                }
             });
         });
 
@@ -668,12 +799,24 @@ impl eframe::App for FdGuiApp {
                 }
             });
 
-            // Messages
+            // Messages (use collapsing headers for potentially long text)
             if let Some(ref err) = self.error_message {
-                ui.colored_label(Color32::RED, err);
+                egui::CollapsingHeader::new(
+                    egui::RichText::new("Error").color(Color32::RED),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.colored_label(Color32::RED, err);
+                });
             }
             if let Some(ref info) = self.info_message {
-                ui.colored_label(Color32::GRAY, info);
+                egui::CollapsingHeader::new(
+                    egui::RichText::new("Info").color(Color32::GRAY),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.colored_label(Color32::GRAY, info);
+                });
             }
 
             ui.separator();
@@ -683,7 +826,7 @@ impl eframe::App for FdGuiApp {
             let mut open_path: Option<PathBuf> = None;
             let mut open_parent: Option<PathBuf> = None;
 
-            ScrollArea::vertical()
+            ScrollArea::both()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     let display_limit = 10_000;
@@ -691,11 +834,8 @@ impl eframe::App for FdGuiApp {
                         let icon = if *is_dir { "📁" } else { "📄" };
                         let text = format!("{icon} {}", path.display());
                         let response = ui
-                            .add(egui::Label::new(text).sense(Sense::click()))
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_text(
-                                "Click: open • Right-click: open containing folder",
-                            );
+                            .add(egui::Label::new(text).truncate().sense(Sense::click()))
+                            .on_hover_cursor(CursorIcon::PointingHand);
 
                         if response.clicked() {
                             open_path = Some(path.clone());
