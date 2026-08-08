@@ -47,17 +47,92 @@ fn file_name_key(p: &Path) -> String {
         .to_lowercase()
 }
 
-// ── Persistence ───────────────────────────────────────────────────────────
+// ── Directory groups ──────────────────────────────────────────────────────
 
+/// A search directory with a unique id for drag & drop.
 #[derive(Clone, Serialize, Deserialize)]
-struct SearchDirectory {
+struct SearchDir {
+    id: u64,
     path: PathBuf,
     enabled: bool,
 }
 
+/// A named group that can contain directories.
+#[derive(Clone, Serialize, Deserialize)]
+struct DirGroup {
+    id: u64,
+    name: String,
+    enabled: bool,
+    collapsed: bool,
+    dirs: Vec<SearchDir>,
+}
+
+/// Flat list of free directories + groups.
+#[derive(Clone, Serialize, Deserialize, Default)]
+struct DirTree {
+    free: Vec<SearchDir>,
+    groups: Vec<DirGroup>,
+    next_id: u64,
+}
+
+impl DirTree {
+    fn alloc_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Collect every enabled directory path.
+    fn enabled_paths(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for d in &self.free {
+            if d.enabled {
+                out.push(d.path.clone());
+            }
+        }
+        for g in &self.groups {
+            if g.enabled {
+                for d in &g.dirs {
+                    if d.enabled {
+                        out.push(d.path.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Total directory count.
+    fn total_dirs(&self) -> usize {
+        self.free.len() + self.groups.iter().map(|g| g.dirs.len()).sum::<usize>()
+    }
+
+    /// Find mutable ref to group.
+    fn group_mut(&mut self, group_id: u64) -> Option<&mut DirGroup> {
+        self.groups.iter_mut().find(|g| g.id == group_id)
+    }
+
+    /// Remove a directory from its current location.
+    fn remove_dir(&mut self, dir_id: u64) -> Option<SearchDir> {
+        if let Some(idx) = self.free.iter().position(|d| d.id == dir_id) {
+            Some(self.free.remove(idx))
+        } else {
+            for g in &mut self.groups {
+                if let Some(idx) = g.dirs.iter().position(|d| d.id == dir_id) {
+                    return Some(g.dirs.remove(idx));
+                }
+            }
+            None
+        }
+    }
+}
+
+// ── Persistence ───────────────────────────────────────────────────────────
+
 #[derive(Serialize, Deserialize)]
 struct PersistedConfig {
-    directories: Vec<SearchDirectory>,
+    #[serde(default)]
+    dir_tree: DirTree,
     pattern: String,
     case_sensitive: bool,
     use_regex: bool,
@@ -67,9 +142,10 @@ struct PersistedConfig {
     respect_ignorefiles: bool,
     ext_filter: String,
     sort_order: SortOrder,
-    // serde(default) keeps configs written by older versions loadable
     #[serde(default)]
     exclude_filter: String,
+    #[serde(default)]
+    empty_dirs: Vec<SearchDir>, // migrate legacy flat list on load
     #[serde(default = "default_ui_scale")]
     ui_scale: f32,
 }
@@ -84,7 +160,34 @@ fn config_path() -> Option<PathBuf> {
 
 fn load_config() -> Option<PersistedConfig> {
     let text = std::fs::read_to_string(config_path()?).ok()?;
-    serde_json::from_str(&text).ok()
+    let mut cfg: PersistedConfig = serde_json::from_str(&text).ok()?;
+    // Migrate legacy flat list (use mem::take to avoid partial move)
+    let empty_dirs = std::mem::take(&mut cfg.empty_dirs);
+    if !empty_dirs.is_empty() && cfg.dir_tree.free.is_empty() {
+        for (i, d) in empty_dirs.into_iter().enumerate() {
+            cfg.dir_tree.free.push(SearchDir {
+                id: i as u64,
+                path: d.path,
+                enabled: d.enabled,
+            });
+        }
+        cfg.dir_tree.next_id = cfg.dir_tree.free.len() as u64;
+    }
+    if cfg.dir_tree.next_id == 0 {
+        cfg.dir_tree.next_id = cfg.dir_tree.total_dirs() as u64 + 10;
+    }
+    // Ensure every directory has an id (repair broken data)
+    let mut max_id = cfg.dir_tree.next_id;
+    for d in &cfg.dir_tree.free {
+        max_id = max_id.max(d.id);
+    }
+    for g in &cfg.dir_tree.groups {
+        for d in &g.dirs {
+            max_id = max_id.max(d.id);
+        }
+    }
+    cfg.dir_tree.next_id = max_id + 1;
+    Some(cfg)
 }
 
 // ── App state ─────────────────────────────────────────────────────────────
@@ -97,8 +200,9 @@ enum SearchStatus {
 
 struct FdGuiApp {
     // ── Directories ──────────────────────────────────────────────────────
-    directories: Vec<SearchDirectory>,
+    dir_tree: DirTree,
     new_dir_path: String,
+    new_group_name: String,
 
     // ── Search parameters ────────────────────────────────────────────────
     pattern: String,
@@ -120,7 +224,7 @@ struct FdGuiApp {
     light_mode: bool,
 
     // ── Search runtime state ─────────────────────────────────────────────
-    results: Vec<(PathBuf, bool)>, // (path, is_dir)
+    results: Vec<(PathBuf, bool)>,
     search_status: SearchStatus,
     cancel_flag: Option<Arc<AtomicBool>>,
     result_receiver: Option<mpsc::Receiver<(PathBuf, bool)>>,
@@ -129,6 +233,8 @@ struct FdGuiApp {
 
     // ── UI state ─────────────────────────────────────────────────────────
     focus_after_search: Option<FocusTarget>,
+    /// (dir_id, new_enabled) to apply after the iteration (avoid borrow issues)
+    pending_enable: Vec<(u64, bool)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -140,14 +246,15 @@ enum FocusTarget {
 
 impl FdGuiApp {
     fn new() -> Self {
-        // Default: current working directory as the only search path
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let mut app = Self {
-            directories: vec![SearchDirectory {
-                path: cwd,
-                enabled: true,
-            }],
+            dir_tree: DirTree {
+                free: Vec::new(),
+                groups: Vec::new(),
+                next_id: 0,
+            },
             new_dir_path: String::new(),
+            new_group_name: String::new(),
             pattern: String::new(),
             case_sensitive: false,
             use_regex: false,
@@ -168,12 +275,11 @@ impl FdGuiApp {
             error_message: None,
             info_message: None,
             focus_after_search: Some(FocusTarget::Pattern),
+            pending_enable: Vec::new(),
         };
 
-        // Restore persisted state (overrides defaults — an empty saved
-        // directory list is respected, it's the user's explicit choice)
         if let Some(cfg) = load_config() {
-            app.directories = cfg.directories;
+            app.dir_tree = cfg.dir_tree;
             app.pattern = cfg.pattern;
             app.case_sensitive = cfg.case_sensitive;
             app.use_regex = cfg.use_regex;
@@ -186,6 +292,17 @@ impl FdGuiApp {
             app.sort_order = cfg.sort_order;
             app.ui_scale = cfg.ui_scale;
         }
+
+        // If nothing was loaded or migrated, add CWD as default
+        if app.dir_tree.total_dirs() == 0 {
+            let id = app.dir_tree.alloc_id();
+            app.dir_tree.free.push(SearchDir {
+                id,
+                path: cwd,
+                enabled: true,
+            });
+        }
+
         app
     }
 
@@ -195,7 +312,7 @@ impl FdGuiApp {
             let _ = std::fs::create_dir_all(parent);
         }
         let cfg = PersistedConfig {
-            directories: self.directories.clone(),
+            dir_tree: self.dir_tree.clone(),
             pattern: self.pattern.clone(),
             case_sensitive: self.case_sensitive,
             use_regex: self.use_regex,
@@ -207,13 +324,13 @@ impl FdGuiApp {
             exclude_filter: self.exclude_filter.clone(),
             sort_order: self.sort_order,
             ui_scale: self.ui_scale,
+            empty_dirs: Vec::new(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&cfg) {
             let _ = std::fs::write(path, json);
         }
     }
 
-    /// Cancel an in-flight search and launch a new one.
     fn start_search(&mut self) {
         if let Some(ref flag) = self.cancel_flag {
             flag.store(true, Ordering::Relaxed);
@@ -224,12 +341,7 @@ impl FdGuiApp {
         self.info_message = None;
         self.needs_sort = false;
 
-        let search_paths: Vec<PathBuf> = self
-            .directories
-            .iter()
-            .filter(|d| d.enabled)
-            .map(|d| d.path.clone())
-            .collect();
+        let search_paths = self.dir_tree.enabled_paths();
 
         if search_paths.is_empty() {
             self.error_message = Some("No directories enabled for search.".into());
@@ -243,7 +355,6 @@ impl FdGuiApp {
             return;
         }
 
-        // Compile regex if the user wants regex matching
         let regex: Option<Regex> = if self.use_regex {
             let re_str = if self.case_sensitive {
                 self.pattern.clone()
@@ -262,7 +373,6 @@ impl FdGuiApp {
             None
         };
 
-        // Parse extension filter: ".rs, py; txt" → ["rs", "py", "txt"]
         let exts: Vec<String> = self
             .ext_filter
             .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
@@ -281,9 +391,8 @@ impl FdGuiApp {
         builder.git_global(self.respect_ignorefiles);
         builder.git_exclude(self.respect_ignorefiles);
         builder.ignore(self.respect_ignorefiles);
-        builder.max_depth(None); // no limit, like fd default
+        builder.max_depth(None);
 
-        // Exclude patterns (like fd -E)
         let exclude_globs: Vec<&str> = self
             .exclude_filter
             .split(|c: char| c == ',' || c == ';')
@@ -293,7 +402,6 @@ impl FdGuiApp {
         if !exclude_globs.is_empty() {
             let mut ov = OverrideBuilder::new(".");
             for glob in &exclude_globs {
-                // `!` prefix means "ignore" in Override semantics
                 let _ = ov.add(&format!("!{}", glob));
             }
             if let Ok(ov) = ov.build() {
@@ -312,17 +420,13 @@ impl FdGuiApp {
         let case_sensitive = self.case_sensitive;
         let dirs_only = self.dirs_only;
 
-        // Run the walker on a background thread
         thread::spawn(move || {
             for result in builder.build() {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-
                 if let Ok(entry) = result {
                     let path = entry.path();
-
-                    // Extension filter (on next search, like fd -e)
                     if !exts.is_empty() {
                         let ext_ok = path
                             .extension()
@@ -336,8 +440,6 @@ impl FdGuiApp {
                             continue;
                         }
                     }
-
-                    // Match against the file name (like fd default)
                     if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                         let hit = if let Some(ref re) = regex {
                             re.is_match(file_name)
@@ -346,7 +448,6 @@ impl FdGuiApp {
                         } else {
                             file_name.to_lowercase().contains(&pattern_lower)
                         };
-
                         if hit {
                             let is_dir =
                                 entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -358,15 +459,12 @@ impl FdGuiApp {
                     }
                 }
             }
-            // Sender dropped here → receiver gets Disconnected
         });
 
         self.search_status = SearchStatus::Searching;
-        // focus stays on whichever field triggered the search
-        self.save_config(); // persist options + pattern on every search
+        self.save_config();
     }
 
-    /// Drain any available results from the background thread.
     fn collect_results(&mut self) {
         if let Some(ref rx) = self.result_receiver {
             loop {
@@ -377,7 +475,7 @@ impl FdGuiApp {
                         self.search_status = SearchStatus::Done;
                         self.result_receiver = None;
                         self.cancel_flag = None;
-                        self.needs_sort = true; // sort once the list is complete
+                        self.needs_sort = true;
                         break;
                     }
                 }
@@ -405,44 +503,49 @@ impl eframe::App for FdGuiApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Mirror egui's zoom factor into our persisted state (the user can
-        // also change it with Ctrl + / Ctrl - / Ctrl 0 keyboard shortcuts)
         self.ui_scale = ctx.zoom_factor();
-
-        // Apply theme
         ctx.set_visuals(if self.light_mode {
             egui::Visuals::light()
         } else {
             egui::Visuals::dark()
         });
 
-        // Drain results from the search thread every frame
         self.collect_results();
         if self.needs_sort {
             self.apply_sort();
             self.needs_sort = false;
         }
-
-        // Keep repainting while results stream in
         if matches!(self.search_status, SearchStatus::Searching) {
             ctx.request_repaint();
         }
-
-        // Ctrl+Q quits
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {
             ctx.send_viewport_cmd(egui::viewport::ViewportCommand::Close);
         }
 
-        // ── Top bar: search input + options ──────────────────────────────
+        // Apply any deferred enable toggles from the dir tree UI
+        let pending = std::mem::take(&mut self.pending_enable);
+        for (dir_id, on) in pending {
+            if let Some(idx) = self.dir_tree.free.iter().position(|d| d.id == dir_id) {
+                self.dir_tree.free[idx].enabled = on;
+            } else {
+                for g in &mut self.dir_tree.groups {
+                    if let Some(idx) = g.dirs.iter().position(|d| d.id == dir_id) {
+                        g.dirs[idx].enabled = on;
+                        break;
+                    }
+                }
+            }
+            self.save_config();
+        }
+
+        // ── Top bar ──────────────────────────────────────────────────────
         egui::TopBottomPanel::top("search_bar").show(ctx, |ui| {
-            // Declare widget IDs up front so the deferred-focus block at
-            // the bottom of this panel can reference them.
             let pattern_id = egui::Id::new("pattern_input");
             let ext_id = egui::Id::new("ext_textedit");
             let excl_id = egui::Id::new("exclude_input");
 
             ui.vertical(|ui| {
-                // Row 0: pattern + action buttons
+                // Row 0
                 ui.horizontal(|ui| {
                     ui.label("🔍");
                     let response = ui.add(
@@ -451,17 +554,14 @@ impl eframe::App for FdGuiApp {
                             .hint_text("Search pattern (file name)…")
                             .desired_width(300.0),
                     );
-
                     let enter_pressed = response.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter));
-
                     if ui.button("Search").clicked() || enter_pressed {
                         self.focus_after_search = Some(FocusTarget::Pattern);
                         self.start_search();
                     }
-
                     if matches!(self.search_status, SearchStatus::Searching)
-                        && ui.button("⏹ Stop").clicked()
+                        && ui.button("Stop").clicked()
                     {
                         if let Some(ref flag) = self.cancel_flag {
                             flag.store(true, Ordering::Relaxed);
@@ -469,7 +569,6 @@ impl eframe::App for FdGuiApp {
                         self.search_status = SearchStatus::Done;
                         self.needs_sort = true;
                     }
-
                     if ui.button("Clear").clicked() {
                         self.pattern.clear();
                         self.results.clear();
@@ -479,7 +578,7 @@ impl eframe::App for FdGuiApp {
                     }
                 });
 
-                // Row 1: option toggles + scale + theme
+                // Row 1 — toggles + scale + theme
                 ui.horizontal(|ui| {
                     let mut opts_changed = false;
                     opts_changed |= ui
@@ -497,7 +596,6 @@ impl eframe::App for FdGuiApp {
                     if opts_changed {
                         self.save_config();
                     }
-
                     ui.separator();
                     ui.label("UI Scale:");
                     if ui
@@ -513,7 +611,6 @@ impl eframe::App for FdGuiApp {
                         ctx.set_zoom_factor(self.ui_scale);
                         self.save_config();
                     }
-
                     ui.separator();
                     let theme_label = if self.light_mode { "Light" } else { "Dark" };
                     egui::ComboBox::from_id_salt("theme_combo")
@@ -535,7 +632,7 @@ impl eframe::App for FdGuiApp {
                         });
                 });
 
-                // Row 2: Ext + Exclude at full width with autocomplete
+                // Row 2 — Ext + Exclude
                 ui.horizontal(|ui| {
                     ui.label("Ext:");
                     let ext_resp = ui.add(
@@ -543,10 +640,8 @@ impl eframe::App for FdGuiApp {
                             .id(ext_id)
                             .hint_text("rs, py, txt…"),
                     );
-
-                    // Autocomplete popup for Ext
-                    let ext_has_focus =
-                        ui.memory_mut(|mem| mem.has_focus(ext_id));
+                    // Autocomplete popup
+                    let ext_has_focus = ui.memory_mut(|mem| mem.has_focus(ext_id));
                     if ext_has_focus && !self.ext_filter.is_empty() {
                         let token = self
                             .ext_filter
@@ -555,67 +650,40 @@ impl eframe::App for FdGuiApp {
                             .unwrap_or("")
                             .trim()
                             .to_lowercase();
-
                         if !token.is_empty() {
                             let mut suggestions: Vec<String> = self
                                 .results
                                 .iter()
-                                .filter_map(|(p, _)| {
-                                    p.extension().and_then(|e| e.to_str())
-                                })
+                                .filter_map(|(p, _)| p.extension().and_then(|e| e.to_str()))
                                 .map(|e| e.to_lowercase())
                                 .filter(|e| e.starts_with(&token))
                                 .collect();
                             suggestions.sort();
                             suggestions.dedup();
-
                             if !suggestions.is_empty() {
-                                let popup_id =
-                                    egui::Id::new("ext_popup");
                                 egui::popup_below_widget(
                                     ui,
-                                    popup_id,
+                                    egui::Id::new("ext_popup"),
                                     &ext_resp,
                                     egui::PopupCloseBehavior::IgnoreClicks,
                                     |ui| {
-                                        egui::ScrollArea::vertical()
+                                        ScrollArea::vertical()
                                             .max_height(150.0)
                                             .show(ui, |ui| {
-                                                for s in
-                                                    suggestions.iter().take(8)
-                                                {
-                                                    if ui
-                                                        .button(s.as_str())
-                                                        .clicked()
-                                                    {
-                                                        // Replace the last
-                                                        // segment with the
-                                                        // chosen extension
-                                                        let prefix: String =
-                                                            self
-                                                                .ext_filter
-                                                                .trim_end_matches(
-                                                                    &token,
-                                                                )
-                                                                .to_string();
-                                                        let new_val =
-                                                            if prefix
-                                                                .is_empty()
-                                                            {
-                                                                s.clone()
-                                                            } else {
-                                                                format!(
-                                                                    "{prefix}{s}"
-                                                                )
-                                                            };
-                                                        self.ext_filter =
-                                                            new_val;
-                                                        ui.memory_mut(
-                                                            |mem| {
-                                                                mem.request_focus(
-                                                                    ext_id,
-                                                                );
-                                                            });
+                                                for s in suggestions.iter().take(8) {
+                                                    if ui.button(s.as_str()).clicked() {
+                                                        let prefix: String = self
+                                                            .ext_filter
+                                                            .trim_end_matches(&token)
+                                                            .to_string();
+                                                        self.ext_filter = if prefix.is_empty() {
+                                                            s.clone()
+                                                        } else {
+                                                            format!("{prefix}{s}")
+                                                        };
+                                                        ui.memory_mut(|mem| {
+                                                            mem.request_focus(ext_id);
+                                                        });
                                                     }
                                                 }
                                             });
@@ -624,14 +692,12 @@ impl eframe::App for FdGuiApp {
                             }
                         }
                     }
-
                     if ext_resp.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
                     {
                         self.focus_after_search = Some(FocusTarget::Ext);
                         self.start_search();
                     }
-
                     ui.label("Exclude:");
                     let excl_resp = ui.add(
                         egui::TextEdit::singleline(&mut self.exclude_filter)
@@ -646,8 +712,7 @@ impl eframe::App for FdGuiApp {
                     }
                 });
 
-                // Apply deferred focus (after all TextEdit widgets exist)
-                // so that both Enter and button-click search work correctly.
+                // Deferred focus
                 if let Some(ref target) = self.focus_after_search {
                     let id = match target {
                         FocusTarget::Pattern => pattern_id,
@@ -660,33 +725,41 @@ impl eframe::App for FdGuiApp {
             });
         });
 
-        // ── Left panel: directory management ─────────────────────────────
+        // ── Left panel: directory tree ────────────────────────────────────
         egui::SidePanel::left("dir_panel")
-            .min_width(260.0)
+            .min_width(280.0)
             .show(ctx, |ui| {
                 ui.heading("Search Directories");
                 ui.separator();
 
-                // Add new directory
+                // ── Add directory row ─────────────────────────────────────
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_dir_path)
                             .hint_text("Path…")
-                            .desired_width(160.0),
+                            .desired_width(170.0),
                     );
-                    if ui.button("Browse…").clicked() {
-                        // Native folder picker (blocks the UI thread but
-                        // runs its own event loop on most platforms)
+                    if ui.button("Browse").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.new_dir_path = path.display().to_string();
                         }
                     }
                 });
-
-                if ui.button("Add").clicked() && !self.new_dir_path.trim().is_empty() {
+                if ui.button("Add directory").clicked()
+                    && !self.new_dir_path.trim().is_empty()
+                {
                     let p = PathBuf::from(self.new_dir_path.trim());
-                    if p.is_dir() && !self.directories.iter().any(|d| d.path == p) {
-                        self.directories.push(SearchDirectory {
+                    if p.is_dir()
+                        && !self.dir_tree.free.iter().any(|d| d.path == p)
+                        && !self
+                            .dir_tree
+                            .groups
+                            .iter()
+                            .any(|g| g.dirs.iter().any(|d| d.path == p))
+                    {
+                        let id = self.dir_tree.alloc_id();
+                        self.dir_tree.free.push(SearchDir {
+                            id,
                             path: p,
                             enabled: true,
                         });
@@ -695,57 +768,350 @@ impl eframe::App for FdGuiApp {
                     }
                 }
 
+                // ── New group row ─────────────────────────────────────────
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_group_name)
+                            .hint_text("Group name…")
+                            .desired_width(170.0),
+                    );
+                    if ui.button("New group").clicked()
+                        && !self.new_group_name.trim().is_empty()
+                    {
+                        let id = self.dir_tree.alloc_id();
+                        self.dir_tree.groups.push(DirGroup {
+                            id,
+                            name: self.new_group_name.trim().to_string(),
+                            enabled: true,
+                            collapsed: false,
+                            dirs: Vec::new(),
+                        });
+                        self.new_group_name.clear();
+                        self.save_config();
+                    }
+                });
+
                 ui.separator();
 
-                // List managed directories (extract values before the
-                // horizontal closure to avoid double-borrowing self)
-                let mut remove_idx: Option<usize> = None;
+                // ── Tree rendering + deferred actions ────────────────────
+                // Snapshot data to avoid borrow conflicts.
+                let free_dirs: Vec<(usize, SearchDir)> = self
+                    .dir_tree
+                    .free
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| (i, d.clone()))
+                    .collect();
+                let groups: Vec<(usize, DirGroup)> = self
+                    .dir_tree
+                    .groups
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| (i, g.clone()))
+                    .collect();
+
+                let mut remove_free: Vec<usize> = Vec::new();
+                let mut remove_group: Vec<usize> = Vec::new();
+                let mut drop_onto_group: Option<(u64, u64)> = None; // (dir_id, group_id)
+                let mut drop_out_of_group: Option<u64> = None; // dir_id to move to free
+                let mut new_group_states: Vec<(usize, bool)> = Vec::new(); // (gi, enabled)
+                let mut new_collapsed: Vec<(usize, bool)> = Vec::new();
+
                 ScrollArea::vertical()
                     .max_height(200.0)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        for i in 0..self.directories.len() {
-                            let path_display =
-                                self.directories[i].path.display().to_string();
-                            let mut enabled = self.directories[i].enabled;
-                            let mut to_remove = false;
+                        // ── Ungroup drop target (pinned at top) ─────────
+                        let ungroup_id = egui::Id::new("ungroup_target");
+                        let ungroup_resp = ui.add(
+                            egui::Label::new("Ungroup (drop here)")
+                                .selectable(false),
+                        );
+                        // Make ungroup label a drop target (allocate a
+                        // full-width interact area)
+                        let ungroup_drop = ui.interact(
+                            ungroup_resp.rect,
+                            ungroup_id,
+                            Sense::hover(),
+                        );
+                        if let Some(payload) =
+                            ungroup_drop.dnd_hover_payload::<u64>()
+                        {
+                            ui.ctx()
+                                .set_cursor_icon(CursorIcon::Grabbing);
+                            ui.painter().rect_stroke(
+                                ungroup_resp.rect.expand(4.0),
+                                4.0,
+                                egui::Stroke::new(
+                                    2.0,
+                                    ui.visuals().selection.bg_fill,
+                                ),
+                                egui::StrokeKind::Middle,
+                            );
+                            if ui.input(|i| i.pointer.any_released()) {
+                                drop_out_of_group = Some(*payload);
+                            }
+                        }
+
+                        // --- Free directories ---
+                        for &(i, ref d) in &free_dirs {
+                            let path_text = d.path.display().to_string();
+                            let mut on = d.enabled;
+                            let mut del = false;
 
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut enabled, "");
-                                ui.label(&path_display);
+                                let resp = ui.add(
+                                    egui::Label::new("::")
+                                        .sense(Sense::drag())
+                                        .selectable(false),
+                                );
+                                resp.dnd_set_drag_payload(d.id);
+                                if ui.checkbox(&mut on, "").changed() {
+                                    self.pending_enable.push((d.id, on));
+                                }
+                                ui.add(
+                                    egui::Label::new(&path_text)
+                                        .selectable(false),
+                                );
                                 if ui.button("🗑").clicked() {
-                                    to_remove = true;
+                                    del = true;
                                 }
                             });
 
-                            if self.directories[i].enabled != enabled {
-                                self.directories[i].enabled = enabled;
-                                self.save_config();
+                            if del {
+                                remove_free.push(i);
                             }
-                            if to_remove {
-                                remove_idx = Some(i);
+                        }
+
+                        // --- Groups ---
+                        for &(gi, ref group) in &groups {
+                            let mut g_on = group.enabled;
+                            let collapsed = group.collapsed;
+                            let mut del_group = false;
+
+                            // Full-width horizontal for drop target
+                            let full_resp = ui
+                                .horizontal(|ui| {
+                                    ui.add(
+                                        egui::Label::new(if collapsed {
+                                            "▶"
+                                        } else {
+                                            "▼"
+                                        })
+                                        .selectable(false),
+                                    );
+                                    if ui
+                                        .checkbox(&mut g_on, "")
+                                        .changed()
+                                    {
+                                        new_group_states
+                                            .push((gi, g_on));
+                                    }
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&group.name)
+                                                .strong(),
+                                        )
+                                        .selectable(false),
+                                    );
+                                    if ui.button("🗑").clicked() {
+                                        del_group = true;
+                                    }
+                                    // Eat remaining space so the response
+                                    // rect spans full width
+                                    ui.allocate_space(egui::vec2(
+                                        ui.available_width(),
+                                        0.0,
+                                    ));
+                                })
+                                .response;
+
+                            // Accept drops on the full group header row
+                            if let Some(payload) =
+                                full_resp.dnd_hover_payload::<u64>()
+                            {
+                                ui.ctx()
+                                    .set_cursor_icon(CursorIcon::Grabbing);
+                                // Visual feedback
+                                ui.painter().rect_stroke(
+                                    full_resp.rect,
+                                    0.0,
+                                    egui::Stroke::new(
+                                        2.0,
+                                        ui.visuals().selection.bg_fill,
+                                    ),
+                                    egui::StrokeKind::Middle,
+                                );
+                                if ui.input(|i| i.pointer.any_released())
+                                {
+                                    drop_onto_group =
+                                        Some((*payload, group.id));
+                                }
+                            }
+
+                            if full_resp.clicked() {
+                                new_collapsed
+                                    .push((gi, !group.collapsed));
+                            }
+                            if del_group {
+                                remove_group.push(gi);
+                                continue;
+                            }
+
+                            // Children
+                            if !collapsed {
+                                let children: Vec<_> =
+                                    group.dirs.iter().cloned().collect();
+                                let mut remove_child: Vec<usize> = Vec::new();
+                                for (ci, child) in children.iter().enumerate() {
+                                    let path_text =
+                                        child.path.display().to_string();
+                                    let mut on = child.enabled;
+                                    let mut del_child = false;
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::Label::new("   ")
+                                                .selectable(false),
+                                        );
+                                        let child_resp = ui.add(
+                                            egui::Label::new("::")
+                                                .sense(Sense::drag())
+                                                .selectable(false),
+                                        );
+                                        child_resp.dnd_set_drag_payload(
+                                            child.id,
+                                        );
+                                        if ui
+                                            .checkbox(&mut on, "")
+                                            .changed()
+                                        {
+                                            self.pending_enable
+                                                .push((child.id, on));
+                                        }
+                                        ui.add(
+                                            egui::Label::new(&path_text)
+                                                .selectable(false),
+                                        );
+                                        if ui.button("🗑").clicked() {
+                                            del_child = true;
+                                        }
+                                    });
+                                    if del_child {
+                                        remove_child.push(ci);
+                                    }
+                                }
+                                // Remove children from this group
+                                if !remove_child.is_empty() {
+                                    let g = &mut self.dir_tree.groups[gi];
+                                    for ci in remove_child.iter().rev() {
+                                        g.dirs.remove(*ci);
+                                    }
+                                    self.save_config();
+                                }
+                            }
+                        }
+
+                        // — Drop target for free-directory area —
+                        // If a directory is released here (not over any
+                        // group), move it out of its group into free.
+                        let free_area_id = egui::Id::new("free_drop_zone");
+                        let free_resp = ui.interact(
+                            ui.max_rect(),
+                            free_area_id,
+                            Sense::hover(),
+                        );
+                        if let Some(payload) =
+                            free_resp.dnd_hover_payload::<u64>()
+                        {
+                            if ui.input(|i| i.pointer.any_released()) {
+                                drop_out_of_group = Some(*payload);
                             }
                         }
                     });
 
-                if let Some(idx) = remove_idx {
-                    self.directories.remove(idx);
+                // Apply deferred actions
+                for &(dir_id, on) in &self.pending_enable {
+                    if let Some(idx) =
+                        self.dir_tree.free.iter().position(|d| d.id == dir_id)
+                    {
+                        self.dir_tree.free[idx].enabled = on;
+                    } else {
+                        for g in &mut self.dir_tree.groups {
+                            if let Some(idx) =
+                                g.dirs.iter().position(|d| d.id == dir_id)
+                            {
+                                g.dirs[idx].enabled = on;
+                                break;
+                            }
+                        }
+                    }
+                }
+                self.pending_enable.clear();
+
+                for i in remove_free.iter().rev() {
+                    self.dir_tree.free.remove(*i);
+                }
+                for gi in remove_group.iter().rev() {
+                    self.dir_tree.groups.remove(*gi);
+                }
+                if let Some((dir_id, group_id)) = drop_onto_group {
+                    if let Some(d) = self.dir_tree.remove_dir(dir_id) {
+                        if let Some(g) = self.dir_tree.group_mut(group_id) {
+                            g.dirs.push(d);
+                        }
+                    }
+                }
+                // Drop outside any group → move to free
+                if let Some(dir_id) = drop_out_of_group {
+                    // Only move if it wasn't already consumed by a group drop
+                    if drop_onto_group.is_none() {
+                        if let Some(d) = self.dir_tree.remove_dir(dir_id) {
+                            self.dir_tree.free.push(d);
+                        }
+                    }
+                }
+                for &(gi, on) in &new_group_states {
+                    self.dir_tree.groups[gi].enabled = on;
+                }
+                for &(gi, coll) in &new_collapsed {
+                    self.dir_tree.groups[gi].collapsed = coll;
+                }
+
+                if !remove_free.is_empty()
+                    || !remove_group.is_empty()
+                    || drop_onto_group.is_some()
+                    || drop_out_of_group.is_some()
+                    || !new_group_states.is_empty()
+                    || !new_collapsed.is_empty()
+                {
                     self.save_config();
                 }
 
                 // Quick toggles
-                if !self.directories.is_empty() {
+                if self.dir_tree.total_dirs() > 0 {
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if ui.button("☑ All").clicked() {
-                            for d in &mut self.directories {
+                        if ui.button("All ON").clicked() {
+                            for d in &mut self.dir_tree.free {
                                 d.enabled = true;
+                            }
+                            for g in &mut self.dir_tree.groups {
+                                g.enabled = true;
+                                for d in &mut g.dirs {
+                                    d.enabled = true;
+                                }
                             }
                             self.save_config();
                         }
-                        if ui.button("☐ None").clicked() {
-                            for d in &mut self.directories {
+                        if ui.button("All OFF").clicked() {
+                            for d in &mut self.dir_tree.free {
                                 d.enabled = false;
+                            }
+                            for g in &mut self.dir_tree.groups {
+                                g.enabled = false;
+                                for d in &mut g.dirs {
+                                    d.enabled = false;
+                                }
                             }
                             self.save_config();
                         }
@@ -753,9 +1119,8 @@ impl eframe::App for FdGuiApp {
                 }
             });
 
-        // ── Central area: results ────────────────────────────────────────
+        // ── Central area ──────────────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Status line + sort selector
             ui.horizontal(|ui| {
                 match self.search_status {
                     SearchStatus::Idle => {
@@ -763,20 +1128,18 @@ impl eframe::App for FdGuiApp {
                     }
                     SearchStatus::Searching => {
                         ui.label(format!(
-                            "🔎 Searching… {} matches so far",
+                            "Searching… {} matches so far",
                             self.results.len()
                         ));
                     }
                     SearchStatus::Done => {
                         ui.label(format!(
-                            "✅ Done — {} matches found",
+                            "Done — {} matches found",
                             self.results.len()
                         ));
                     }
                 }
-
                 ui.separator();
-
                 ui.label("Sort:");
                 let mut sort_order = self.sort_order;
                 let mut changed = false;
@@ -785,7 +1148,11 @@ impl eframe::App for FdGuiApp {
                     .show_ui(ui, |ui| {
                         for order in SortOrder::ALL {
                             if ui
-                                .selectable_value(&mut sort_order, order, order.label())
+                                .selectable_value(
+                                    &mut sort_order,
+                                    order,
+                                    order.label(),
+                                )
                                 .changed()
                             {
                                 changed = true;
@@ -799,7 +1166,6 @@ impl eframe::App for FdGuiApp {
                 }
             });
 
-            // Messages (use collapsing headers for potentially long text)
             if let Some(ref err) = self.error_message {
                 egui::CollapsingHeader::new(
                     egui::RichText::new("Error").color(Color32::RED),
@@ -821,8 +1187,6 @@ impl eframe::App for FdGuiApp {
 
             ui.separator();
 
-            // Results list — clickable (collect clicks, act after the loop
-            // to avoid mutating self while iterating over self.results)
             let mut open_path: Option<PathBuf> = None;
             let mut open_parent: Option<PathBuf> = None;
 
@@ -834,9 +1198,12 @@ impl eframe::App for FdGuiApp {
                         let icon = if *is_dir { "📁" } else { "📄" };
                         let text = format!("{icon} {}", path.display());
                         let response = ui
-                            .add(egui::Label::new(text).truncate().sense(Sense::click()))
+                            .add(
+                                egui::Label::new(text)
+                                    .truncate()
+                                    .sense(Sense::click()),
+                            )
                             .on_hover_cursor(CursorIcon::PointingHand);
-
                         if response.clicked() {
                             open_path = Some(path.clone());
                         }
@@ -855,11 +1222,11 @@ impl eframe::App for FdGuiApp {
                     }
                 });
 
-            // Handle open requests
             if let Some(p) = open_path {
                 match open::that(&p) {
                     Ok(()) => {
-                        self.info_message = Some(format!("Opened {}", p.display()));
+                        self.info_message =
+                            Some(format!("Opened {}", p.display()));
                     }
                     Err(e) => {
                         self.error_message =
@@ -886,7 +1253,6 @@ impl eframe::App for FdGuiApp {
 // ── main ──────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), eframe::Error> {
-    // Load the application icon from embedded PNG
     let icon_bytes = include_bytes!("../assets/icon_128.png");
     let icon = eframe::icon_data::from_png_bytes(icon_bytes)
         .expect("embedded icon must be valid PNG");
@@ -904,7 +1270,6 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| {
             let app = FdGuiApp::new();
-            // Apply the persisted UI scale at startup
             cc.egui_ctx.set_zoom_factor(app.ui_scale);
             cc.egui_ctx.set_visuals(if app.light_mode {
                 egui::Visuals::light()
