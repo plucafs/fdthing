@@ -18,16 +18,24 @@ enum SortOrder {
     NameAsc,
     NameDesc,
     PathAsc,
-    #[serde(other)]
     PathDesc,
+    SizeAsc,
+    SizeDesc,
+    ModifiedAsc,
+    #[serde(other)]
+    ModifiedDesc,
 }
 
 impl SortOrder {
-    const ALL: [SortOrder; 4] = [
+    const ALL: [SortOrder; 8] = [
         SortOrder::NameAsc,
         SortOrder::NameDesc,
         SortOrder::PathAsc,
         SortOrder::PathDesc,
+        SortOrder::SizeAsc,
+        SortOrder::SizeDesc,
+        SortOrder::ModifiedAsc,
+        SortOrder::ModifiedDesc,
     ];
 
     fn label(self) -> &'static str {
@@ -36,6 +44,10 @@ impl SortOrder {
             SortOrder::NameDesc => "Name (Des)",
             SortOrder::PathAsc => "Path (Asc)",
             SortOrder::PathDesc => "Path (Des)",
+            SortOrder::SizeAsc => "Size (Asc)",
+            SortOrder::SizeDesc => "Size (Des)",
+            SortOrder::ModifiedAsc => "Modified (Asc)",
+            SortOrder::ModifiedDesc => "Modified (Des)",
         }
     }
 }
@@ -45,6 +57,62 @@ fn file_name_key(p: &Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_lowercase()
+}
+
+// ── Results ──────────────────────────────────────────────────────────────
+
+/// One search result with metadata.
+#[derive(Clone)]
+struct ResultEntry {
+    path: PathBuf,
+    is_dir: bool,
+    size: u64,
+    modified: i64,  // unix timestamp seconds
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes == 0 {
+        "—".into()
+    } else if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+fn format_date(ts: i64) -> String {
+    if ts <= 0 {
+        return "—".into();
+    }
+    // Use chrono or manual — keep it simple: YYYY-MM-DD HH:MM
+    let secs = ts;
+    let days_since_epoch = secs / 86400;
+    // Gregorian approximation (good enough for display)
+    let (y, m, d) = civil_from_days(days_since_epoch);
+    let remaining = secs % 86400;
+    let h = remaining / 3600;
+    let min = (remaining % 3600) / 60;
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02}")
+}
+
+/// Approximate Gregorian calendar from days since Unix epoch (1970-01-01).
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    // Based on Howard Hinnant's algorithm
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as i64, d as i64)
 }
 
 // ── Directory groups ──────────────────────────────────────────────────────
@@ -148,6 +216,8 @@ struct PersistedConfig {
     empty_dirs: Vec<SearchDir>, // migrate legacy flat list on load
     #[serde(default = "default_ui_scale")]
     ui_scale: f32,
+    #[serde(default)]
+    result_view: ResultView,
 }
 
 fn default_ui_scale() -> f32 {
@@ -222,12 +292,13 @@ struct FdGuiApp {
     // ── Appearance ───────────────────────────────────────────────────────
     ui_scale: f32,
     light_mode: bool,
+    result_view: ResultView,
 
     // ── Search runtime state ─────────────────────────────────────────────
-    results: Vec<(PathBuf, bool)>,
+    results: Vec<ResultEntry>,
     search_status: SearchStatus,
     cancel_flag: Option<Arc<AtomicBool>>,
-    result_receiver: Option<mpsc::Receiver<(PathBuf, bool)>>,
+    result_receiver: Option<mpsc::Receiver<ResultEntry>>,
     error_message: Option<String>,
     info_message: Option<String>,
 
@@ -242,6 +313,25 @@ enum FocusTarget {
     Pattern,
     Ext,
     Exclude,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Default)]
+enum ResultView {
+    #[default]
+    Aligned,
+    Fluid,
+    #[serde(other)]
+    Simple,
+}
+
+impl ResultView {
+    fn label(self) -> &'static str {
+        match self {
+            ResultView::Aligned => "Table (aligned)",
+            ResultView::Fluid => "Table (fluid)",
+            ResultView::Simple => "Table (compact)",
+        }
+    }
 }
 
 impl FdGuiApp {
@@ -268,6 +358,7 @@ impl FdGuiApp {
             needs_sort: false,
             ui_scale: 1.0,
             light_mode: false,
+            result_view: ResultView::Aligned,
             results: Vec::new(),
             search_status: SearchStatus::Idle,
             cancel_flag: None,
@@ -291,6 +382,7 @@ impl FdGuiApp {
             app.exclude_filter = cfg.exclude_filter;
             app.sort_order = cfg.sort_order;
             app.ui_scale = cfg.ui_scale;
+            app.result_view = cfg.result_view;
         }
 
         // If nothing was loaded or migrated, add CWD as default
@@ -324,6 +416,7 @@ impl FdGuiApp {
             exclude_filter: self.exclude_filter.clone(),
             sort_order: self.sort_order,
             ui_scale: self.ui_scale,
+            result_view: self.result_view,
             empty_dirs: Vec::new(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&cfg) {
@@ -454,7 +547,19 @@ impl FdGuiApp {
                             if dirs_only && !is_dir {
                                 continue;
                             }
-                            let _ = tx.send((path.to_path_buf(), is_dir));
+                            // Grab metadata (the walker already has it cached)
+                            let meta = entry.metadata().ok();
+                            let entry = ResultEntry {
+                                path: path.to_path_buf(),
+                                is_dir,
+                                size: meta.as_ref().map_or(0, |m| m.len()),
+                                modified: meta
+                                    .as_ref()
+                                    .and_then(|m| m.modified().ok())
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map_or(0, |d| d.as_secs() as i64),
+                            };
+                            let _ = tx.send(entry);
                         }
                     }
                 }
@@ -485,12 +590,28 @@ impl FdGuiApp {
 
     fn apply_sort(&mut self) {
         match self.sort_order {
-            SortOrder::NameAsc => self.results.sort_by_key(|(p, _)| file_name_key(p)),
+            SortOrder::NameAsc => {
+                self.results.sort_by_key(|e| file_name_key(&e.path))
+            }
             SortOrder::NameDesc => self
                 .results
-                .sort_by_key(|(p, _)| Reverse(file_name_key(p))),
-            SortOrder::PathAsc => self.results.sort(),
-            SortOrder::PathDesc => self.results.sort_by(|a, b| b.cmp(a)),
+                .sort_by_key(|e| Reverse(file_name_key(&e.path))),
+            SortOrder::PathAsc => {
+                self.results.sort_by(|a, b| a.path.cmp(&b.path))
+            }
+            SortOrder::PathDesc => {
+                self.results.sort_by(|a, b| b.path.cmp(&a.path))
+            }
+            SortOrder::SizeAsc => self.results.sort_by_key(|e| e.size),
+            SortOrder::SizeDesc => {
+                self.results.sort_by_key(|e| Reverse(e.size))
+            }
+            SortOrder::ModifiedAsc => {
+                self.results.sort_by_key(|e| e.modified)
+            }
+            SortOrder::ModifiedDesc => {
+                self.results.sort_by_key(|e| Reverse(e.modified))
+            }
         }
     }
 }
@@ -630,6 +751,38 @@ impl eframe::App for FdGuiApp {
                                 self.save_config();
                             }
                         });
+
+                    ui.separator();
+                    let view_label = self.result_view.label();
+                    egui::ComboBox::from_id_salt("view_combo")
+                        .selected_text(format!("View: {view_label}"))
+                        .show_ui(ui, |ui| {
+                            let mut changed = false;
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.result_view,
+                                    ResultView::Aligned,
+                                    ResultView::Aligned.label(),
+                                )
+                                .clicked();
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.result_view,
+                                    ResultView::Fluid,
+                                    ResultView::Fluid.label(),
+                                )
+                                .clicked();
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.result_view,
+                                    ResultView::Simple,
+                                    ResultView::Simple.label(),
+                                )
+                                .clicked();
+                            if changed {
+                                self.save_config();
+                            }
+                        });
                 });
 
                 // Row 2 — Ext + Exclude
@@ -654,7 +807,7 @@ impl eframe::App for FdGuiApp {
                             let mut suggestions: Vec<String> = self
                                 .results
                                 .iter()
-                                .filter_map(|(p, _)| p.extension().and_then(|e| e.to_str()))
+                                .filter_map(|e| e.path.extension().and_then(|x| x.to_str()))
                                 .map(|e| e.to_lowercase())
                                 .filter(|e| e.starts_with(&token))
                                 .collect();
@@ -1156,29 +1309,135 @@ impl eframe::App for FdGuiApp {
 
             ui.separator();
 
+            // ── Column widths (fixed, not relative) ───────────────────
+            let name_w = 260.0;
+            let path_w = 400.0;
+            let size_w = 80.0;
+            let date_w = 140.0;
+            let separator_w = 15.0; // ≈ width of `ui.separator()`
+            let row_w = name_w + path_w + size_w + date_w + separator_w * 3.0 + 20.0;
+
+            // ── Column headers (compact, font height only) ────────────
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                let (r, _) = ui.allocate_exact_size(
+                    egui::vec2(name_w, 0.0),
+                    Sense::hover(),
+                );
+                ui.put(r, egui::Label::new("Name").selectable(false));
+                ui.separator();
+                let (r, _) = ui.allocate_exact_size(
+                    egui::vec2(path_w, 0.0),
+                    Sense::hover(),
+                );
+                ui.put(r, egui::Label::new("Path").selectable(false));
+                ui.separator();
+                let (r, _) = ui.allocate_exact_size(
+                    egui::vec2(size_w, 0.0),
+                    Sense::hover(),
+                );
+                ui.put(r, egui::Label::new("Size").selectable(false));
+                ui.separator();
+                let (r, _) = ui.allocate_exact_size(
+                    egui::vec2(date_w, 0.0),
+                    Sense::hover(),
+                );
+                ui.put(r, egui::Label::new("Modified").selectable(false));
+            });
+            ui.separator();
+
             let mut open_path: Option<PathBuf> = None;
             let mut open_parent: Option<PathBuf> = None;
+
+            // Enforce content width so horizontal scroll works
+            if self.result_view == ResultView::Aligned {
+            ui.set_min_width(row_w);
 
             ScrollArea::both()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
+                    ui.set_min_width(row_w);
                     let display_limit = 10_000;
-                    for (path, is_dir) in self.results.iter().take(display_limit) {
-                        let icon = if *is_dir { "📁" } else { "📄" };
-                        let text = format!("{icon} {}", path.display());
-                        let response = ui
-                            .add(
-                                egui::Label::new(text)
+                    for entry in self.results.iter().take(display_limit) {
+                        let icon = if entry.is_dir { "📁" } else { "📄" };
+                        let file_name = entry
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("???");
+                        let parent = entry.path.parent().and_then(|p| p.to_str()).unwrap_or("");
+                        let size_str = if entry.is_dir {
+                            "—".into()
+                        } else {
+                            format_size(entry.size)
+                        };
+                        let date_str = format_date(entry.modified);
+
+                        ui.horizontal(|ui| {
+                            let name = format!("{icon} {file_name}");
+                            // Fixed-width columns via allocate_exact_size.
+                            // The label is placed inside the rect with ui.put,
+                            // which aligns to the top-left by default.
+                            let (name_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(name_w, 0.0),
+                                Sense::hover(),
+                            );
+                            let name_resp = ui.put(
+                                name_rect,
+                                egui::Label::new(name)
                                     .truncate()
-                                    .sense(Sense::click()),
-                            )
-                            .on_hover_cursor(CursorIcon::PointingHand);
-                        if response.clicked() {
-                            open_path = Some(path.clone());
-                        }
-                        if response.secondary_clicked() {
-                            open_parent = path.parent().map(|p| p.to_path_buf());
-                        }
+                                    .sense(Sense::click())
+                                    .selectable(false),
+                            );
+                            ui.separator();
+                            let (path_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(path_w, 0.0),
+                                Sense::hover(),
+                            );
+                            ui.put(
+                                path_rect,
+                                egui::Label::new(parent)
+                                    .truncate()
+                                    .selectable(false),
+                            );
+                            ui.separator();
+                            let (size_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(size_w, 0.0),
+                                Sense::hover(),
+                            );
+                            ui.put(
+                                size_rect,
+                                egui::Label::new(
+                                    egui::RichText::new(&size_str)
+                                        .monospace(),
+                                )
+                                .selectable(false),
+                            );
+                            ui.separator();
+                            let (date_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(date_w, 0.0),
+                                Sense::hover(),
+                            );
+                            ui.put(
+                                date_rect,
+                                egui::Label::new(
+                                    egui::RichText::new(&date_str)
+                                        .monospace(),
+                                )
+                                .selectable(false),
+                            );
+
+                            let name_resp = name_resp
+                                .on_hover_cursor(CursorIcon::PointingHand);
+                            if name_resp.clicked()
+                            {
+                                open_path = Some(entry.path.clone());
+                            }
+                            if name_resp.secondary_clicked() {
+                                open_parent =
+                                    entry.path.parent().map(|p| p.to_path_buf());
+                            }
+                        });
                     }
                     if self.results.len() > display_limit {
                         ui.colored_label(
@@ -1190,6 +1449,114 @@ impl eframe::App for FdGuiApp {
                         );
                     }
                 });
+            } else if self.result_view == ResultView::Fluid {
+                // Fluid view: columns flow naturally, no fixed widths
+                ScrollArea::both()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        let display_limit = 10_000;
+                        for entry in self.results.iter().take(display_limit) {
+                            let icon = if entry.is_dir { "📁" } else { "📄" };
+                            let file_name = entry
+                                .path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("???");
+                            let parent = entry.path.parent().and_then(|p| p.to_str()).unwrap_or("");
+                            let size_str = if entry.is_dir {
+                                "—".into()
+                            } else {
+                                format_size(entry.size)
+                            };
+                            let date_str = format_date(entry.modified);
+
+                            ui.horizontal(|ui| {
+                                let name = format!("{icon} {file_name}");
+                                let name_resp = ui.add(
+                                    egui::Label::new(name)
+                                        .sense(Sense::click())
+                                        .selectable(false),
+                                );
+                                ui.separator();
+                                ui.add(
+                                    egui::Label::new(parent)
+                                        .selectable(false),
+                                );
+                                ui.separator();
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&size_str)
+                                            .monospace(),
+                                    )
+                                    .selectable(false),
+                                );
+                                ui.separator();
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&date_str)
+                                            .monospace(),
+                                    )
+                                    .selectable(false),
+                                );
+
+                                let name_resp = name_resp
+                                    .on_hover_cursor(CursorIcon::PointingHand);
+                                if name_resp.clicked() {
+                                    open_path = Some(entry.path.clone());
+                                }
+                                if name_resp.secondary_clicked() {
+                                    open_parent = entry
+                                        .path
+                                        .parent()
+                                        .map(|p| p.to_path_buf());
+                                }
+                            });
+                        }
+                        if self.results.len() > display_limit {
+                            ui.colored_label(
+                                Color32::YELLOW,
+                                format!(
+                                    "… and {} more (not shown to keep the UI responsive)",
+                                    self.results.len() - display_limit
+                                ),
+                            );
+                        }
+                    });
+            } else {
+                // Simple view: single-line icon + full path
+                ScrollArea::both()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        let display_limit = 10_000;
+                        for entry in self.results.iter().take(display_limit) {
+                            let icon = if entry.is_dir { "📁" } else { "📄" };
+                            let text = format!("{icon} {}", entry.path.display());
+                            let response = ui
+                                .add(
+                                    egui::Label::new(text)
+                                        .truncate()
+                                        .sense(Sense::click()),
+                                )
+                                .on_hover_cursor(CursorIcon::PointingHand);
+                            if response.clicked() {
+                                open_path = Some(entry.path.clone());
+                            }
+                            if response.secondary_clicked() {
+                                open_parent =
+                                    entry.path.parent().map(|p| p.to_path_buf());
+                            }
+                        }
+                        if self.results.len() > display_limit {
+                            ui.colored_label(
+                                Color32::YELLOW,
+                                format!(
+                                    "… and {} more (not shown to keep the UI responsive)",
+                                    self.results.len() - display_limit
+                                ),
+                            );
+                        }
+                    });
+            }
 
             if let Some(p) = open_path {
                 match open::that(&p) {
