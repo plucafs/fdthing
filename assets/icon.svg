@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2D2436"/>
+      <stop offset="100%" stop-color="#1a1420"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#BB86FC"/>
+      <stop offset="100%" stop-color="#7C4DFF"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#BB86FC" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#7C4DFF" stop-opacity="0.1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="8" y="8" width="240" height="240" rx="48" ry="48" fill="url(#bg)"/>
+
+  <!-- Glow behind lens -->
+  <circle cx="126" cy="122" r="72" fill="url(#glow)"/>
+
+  <!-- Magnifying glass handle -->
+  <rect x="166" y="162" width="32" height="72" rx="10" ry="10"
+        fill="#BB86FC" transform="rotate(-45 182 198)"
+        opacity="0.9"/>
+
+  <!-- Magnifying glass outer ring -->
+  <circle cx="126" cy="122" r="56" fill="none" stroke="url(#lens)"
+          stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Lens glass -->
+  <circle cx="126" cy="122" r="52" fill="#BB86FC" fill-opacity="0.15"/>
+
+  <!-- Light reflection on lens -->
+  <ellipse cx="110" cy="105" rx="18" ry="12" fill="white" opacity="0.2"
+           transform="rotate(-30 110 105)"/>
+
+  <!-- File document icon inside the lens -->
+  <rect x="106" y="102" width="48" height="58" rx="6" ry="6"
+        fill="#E0D7F5" stroke="#BB86FC" stroke-width="2.5"/>
+
+  <!-- Document lines -->
+  <line x1="116" y1="118" x2="144" y2="118" stroke="#BB86FC"
+        stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="116" y1="130" x2="144" y2="130" stroke="#BB86FC"
+        stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="116" y1="142" x2="134" y2="142" stroke="#BB86FC"
+        stroke-width="3.5" stroke-linecap="round" opacity="0.5"/>
+
+  <!-- Small F letter on file tab -->
+  <text x="115" y="113" font-family="sans-serif" font-size="14"
+        font-weight="bold" fill="#7C4DFF">f</text>
+
+  <!-- Dots / sparkles -->
+  <circle cx="50" cy="60" r="4" fill="#BB86FC" opacity="0.6"/>
+  <circle cx="210" cy="70" r="3" fill="#BB86FC" opacity="0.4"/>
+  <circle cx="60" cy="190" r="3" fill="#BB86FC" opacity="0.3"/>
+  <circle cx="205" cy="175" r="2.5" fill="#7C4DFF" opacity="0.5"/>
+</svg>
