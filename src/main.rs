@@ -675,7 +675,7 @@ impl eframe::App for FdGuiApp {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.heading("fdthing");
-                    ui.label("A graphical file finder for fd.");
+                    ui.label("A graphical file finder, on top of fd");
                     ui.label(format!(
                         "Version {}",
                         env!("CARGO_PKG_VERSION")
