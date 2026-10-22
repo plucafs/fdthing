@@ -221,13 +221,44 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                         for entry in app.results.iter().take(limit) {
                             let icon =
                                 if entry.is_dir { "📁" } else { "📄" };
-                            let text = format!(
-                                "{icon} {}",
-                                entry.path.display()
+                            let file_name = entry
+                                .path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("???");
+                            let parent = entry
+                                .path
+                                .parent()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default();
+                            let mut job =
+                                egui::text::LayoutJob::default();
+                            let font_id =
+                                egui::FontSelection::Default
+                                    .resolve(ui.style());
+                            job.append(
+                                &format!("{icon} {file_name}"),
+                                0.0,
+                                egui::text::TextFormat {
+                                    font_id: font_id.clone(),
+                                    color: ui.visuals().text_color(),
+                                    ..Default::default()
+                                },
+                            );
+                            job.append(
+                                &format!(" {parent}"),
+                                0.0,
+                                egui::text::TextFormat {
+                                    font_id,
+                                    color: ui
+                                        .visuals()
+                                        .weak_text_color(),
+                                    ..Default::default()
+                                },
                             );
                             let resp = ui
                                 .add(
-                                    egui::Label::new(text)
+                                    egui::Label::new(job)
                                         .truncate()
                                         .sense(Sense::click()),
                                 )
