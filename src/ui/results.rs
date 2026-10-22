@@ -114,49 +114,64 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
         let mut open_path: Option<PathBuf> = None;
         let mut open_folder: Option<PathBuf> = None;
         let mut open_parent: Option<PathBuf> = None;
+        let scroll_to_top = std::mem::take(&mut app.scroll_to_top);
+        let mut selected_path = app.selected_path.clone();
 
         // Results
         match app.result_view {
             ResultView::Aligned => {
                 ui.set_min_width(row_w);
-                ScrollArea::both()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        ui.set_min_width(row_w);
-                        render_rows(
-                            ui,
-                            &app.results,
-                            name_w,
-                            path_w,
-                            size_w,
-                            date_w,
-                            true,
-                            &mut open_path,
-                            &mut open_folder,
-                            &mut open_parent,
-                        );
-                    });
+                let mut scroll = ScrollArea::both().auto_shrink([false; 2]);
+                if scroll_to_top {
+                    scroll = scroll.vertical_scroll_offset(0.0);
+                }
+                scroll.show(ui, |ui| {
+                    ui.set_min_width(row_w);
+                    render_rows(
+                        ui,
+                        &app.results,
+                        name_w,
+                        path_w,
+                        size_w,
+                        date_w,
+                        true,
+                        &mut open_path,
+                        &mut open_folder,
+                        &mut open_parent,
+                        &mut selected_path,
+                    );
+                });
             }
             ResultView::Fluid => {
-                ScrollArea::both()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        let limit = 10_000;
-                        for entry in app.results.iter().take(limit) {
-                            let icon = if entry.is_dir { "📁" } else { "📄" };
-                            let file_name = entry
-                                .path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("???");
-                            let parent = entry.path.parent().and_then(|p| p.to_str()).unwrap_or("");
-                            let size_str = if entry.is_dir {
-                                "—".into()
-                            } else {
-                                format_size(entry.size)
-                            };
-                            let date_str = format_date(entry.modified);
+                let mut scroll = ScrollArea::both().auto_shrink([false; 2]);
+                if scroll_to_top {
+                    scroll = scroll.vertical_scroll_offset(0.0);
+                }
+                scroll.show(ui, |ui| {
+                    let limit = 10_000;
+                    for entry in app.results.iter().take(limit) {
+                        let icon = if entry.is_dir { "📁" } else { "📄" };
+                        let file_name = entry
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("???");
+                        let parent = entry.path.parent().and_then(|p| p.to_str()).unwrap_or("");
+                        let size_str = if entry.is_dir {
+                            "—".into()
+                        } else {
+                            format_size(entry.size)
+                        };
+                        let date_str = format_date(entry.modified);
+                        let is_selected =
+                            selected_path.as_ref() == Some(&entry.path);
 
+                        let mut frame = egui::Frame::new();
+                        if is_selected {
+                            frame = frame
+                                .fill(ui.visuals().selection.bg_fill);
+                        }
+                        frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let name = format!("{icon} {file_name}");
                                 let name_resp = ui.add(
@@ -189,6 +204,10 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                 let name_resp = name_resp
                                     .on_hover_cursor(CursorIcon::PointingHand);
                                 if name_resp.clicked() {
+                                    selected_path =
+                                        Some(entry.path.clone());
+                                }
+                                if name_resp.double_clicked() {
                                     open_path = Some(entry.path.clone());
                                 }
                                 name_resp.context_menu(|ui| {
@@ -200,94 +219,134 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                         &mut open_parent,
                                     );
                                 });
+                                ui.allocate_space(egui::vec2(
+                                    ui.available_width(),
+                                    0.0,
+                                ));
                             });
-                        }
-                        if app.results.len() > limit {
-                            ui.colored_label(
-                                Color32::YELLOW,
-                                format!(
-                                    "… and {} more",
-                                    app.results.len() - limit
-                                ),
-                            );
-                        }
-                    });
+                        });
+                    }
+                    if app.results.len() > limit {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            format!(
+                                "… and {} more",
+                                app.results.len() - limit
+                            ),
+                        );
+                    }
+                });
             }
             ResultView::Simple => {
-                ScrollArea::both()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        let limit = 10_000;
-                        for entry in app.results.iter().take(limit) {
-                            let icon =
-                                if entry.is_dir { "📁" } else { "📄" };
-                            let file_name = entry
-                                .path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("???");
-                            let parent = entry
-                                .path
-                                .parent()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default();
-                            let mut job =
-                                egui::text::LayoutJob::default();
-                            let font_id =
-                                egui::FontSelection::Default
-                                    .resolve(ui.style());
-                            job.append(
-                                &format!("{icon} {file_name}"),
+                let mut scroll = ScrollArea::both().auto_shrink([false; 2]);
+                if scroll_to_top {
+                    scroll = scroll.vertical_scroll_offset(0.0);
+                }
+                scroll.show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let limit = 10_000;
+                    for entry in app.results.iter().take(limit) {
+                        let icon =
+                            if entry.is_dir { "📁" } else { "📄" };
+                        let file_name = entry
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("???");
+                        let parent = entry
+                            .path
+                            .parent()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
+                        let mut font_id = egui::FontSelection::Default
+                            .resolve(ui.style());
+                        font_id.size = (font_id.size * 0.85).round();
+                        let mut job =
+                            egui::text::LayoutJob::default();
+                        job.append(
+                            &format!("{icon} {file_name}"),
+                            0.0,
+                            egui::text::TextFormat {
+                                font_id: font_id.clone(),
+                                color: ui.visuals().text_color(),
+                                ..Default::default()
+                            },
+                        );
+                        job.append(
+                            &format!(" {parent}"),
+                            0.0,
+                            egui::text::TextFormat {
+                                font_id,
+                                color: ui
+                                    .visuals()
+                                    .weak_text_color(),
+                                ..Default::default()
+                            },
+                        );
+                        let is_selected =
+                            selected_path.as_ref() == Some(&entry.path);
+
+                        job.wrap.max_rows = 1;
+                        job.wrap.break_anywhere = true;
+                        job.wrap.max_width = ui.available_width();
+                        let galley =
+                            ui.fonts(|f| f.layout_job(job));
+                        let (rect, resp) = ui.allocate_exact_size(
+                            egui::vec2(
+                                ui.available_width(),
+                                galley.size().y,
+                            ),
+                            Sense::click(),
+                        );
+                        let resp = resp
+                            .on_hover_cursor(CursorIcon::PointingHand);
+                        if is_selected || resp.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
                                 0.0,
-                                egui::text::TextFormat {
-                                    font_id: font_id.clone(),
-                                    color: ui.visuals().text_color(),
-                                    ..Default::default()
+                                if is_selected {
+                                    ui.visuals().selection.bg_fill
+                                } else {
+                                    ui.visuals().widgets.hovered.bg_fill
                                 },
                             );
-                            job.append(
-                                &format!(" {parent}"),
-                                0.0,
-                                egui::text::TextFormat {
-                                    font_id,
-                                    color: ui
-                                        .visuals()
-                                        .weak_text_color(),
-                                    ..Default::default()
-                                },
-                            );
-                            let resp = ui
-                                .add(
-                                    egui::Label::new(job)
-                                        .truncate()
-                                        .sense(Sense::click()),
-                                )
-                                .on_hover_cursor(CursorIcon::PointingHand);
-                            if resp.clicked() {
-                                open_path = Some(entry.path.clone());
-                            }
-                            resp.context_menu(|ui| {
-                                item_context_menu(
-                                    ui,
-                                    entry,
-                                    &mut open_path,
-                                    &mut open_folder,
-                                    &mut open_parent,
-                                );
-                            });
                         }
-                        if app.results.len() > limit {
-                            ui.colored_label(
-                                Color32::YELLOW,
-                                format!(
-                                    "… and {} more",
-                                    app.results.len() - limit
-                                ),
-                            );
+                        ui.painter().galley(
+                            rect.left_top(),
+                            galley,
+                            ui.visuals().text_color(),
+                        );
+                        if resp.clicked() {
+                            selected_path =
+                                Some(entry.path.clone());
                         }
-                    });
+                        if resp.double_clicked() {
+                            open_path = Some(entry.path.clone());
+                        }
+                        resp.context_menu(|ui| {
+                            item_context_menu(
+                                ui,
+                                entry,
+                                &mut open_path,
+                                &mut open_folder,
+                                &mut open_parent,
+                            );
+                        });
+                    }
+                    if app.results.len() > limit {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            format!(
+                                "… and {} more",
+                                app.results.len() - limit
+                            ),
+                        );
+                    }
+                });
             }
         }
+
+        app.selected_path = selected_path;
 
         // ── Open handlers ────────────────────────────────────────────────
         if let Some(p) = open_path {
@@ -399,9 +458,11 @@ fn render_rows(
     open_path: &mut Option<PathBuf>,
     open_folder: &mut Option<PathBuf>,
     open_parent: &mut Option<PathBuf>,
+    selected_path: &mut Option<PathBuf>,
 ) {
     let limit = 10_000;
     for entry in results.iter().take(limit) {
+        let is_selected = selected_path.as_ref() == Some(&entry.path);
         let icon = if entry.is_dir { "📁" } else { "📄" };
         let file_name = entry
             .path
@@ -416,7 +477,12 @@ fn render_rows(
         };
         let date_str = format_date(entry.modified);
 
-        ui.horizontal(|ui| {
+        let mut frame = egui::Frame::new();
+        if is_selected {
+            frame = frame.fill(ui.visuals().selection.bg_fill);
+        }
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
             let name = format!("{icon} {file_name}");
             let mut name_label = egui::Label::new(name)
                 .sense(Sense::click())
@@ -471,6 +537,9 @@ fn render_rows(
             let name_resp =
                 name_resp.on_hover_cursor(CursorIcon::PointingHand);
             if name_resp.clicked() {
+                *selected_path = Some(entry.path.clone());
+            }
+            if name_resp.double_clicked() {
                 *open_path = Some(entry.path.clone());
             }
             name_resp.context_menu(|ui| {
@@ -481,6 +550,8 @@ fn render_rows(
                     open_folder,
                     open_parent,
                 );
+            });
+            ui.allocate_space(egui::vec2(ui.available_width(), 0.0));
             });
         });
     }

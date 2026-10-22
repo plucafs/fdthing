@@ -47,6 +47,8 @@ pub struct FdGuiApp {
     // ── UI state ─────────────────────────────────────────────────────────
     pub focus_after_search: Option<FocusTarget>,
     pub select_all_on_focus: bool,
+    pub selected_path: Option<PathBuf>,
+    pub scroll_to_top: bool,
     pub pending_enable: Vec<(u64, bool)>,
     pub show_about: bool,
 }
@@ -80,6 +82,8 @@ impl FdGuiApp {
             info_message: None,
             focus_after_search: Some(FocusTarget::Pattern),
             select_all_on_focus: true,
+            selected_path: None,
+            scroll_to_top: false,
             pending_enable: Vec::new(),
             show_about: false,
         };
@@ -148,6 +152,8 @@ impl FdGuiApp {
         self.error_message = None;
         self.info_message = None;
         self.needs_sort = false;
+        self.selected_path = None;
+        self.scroll_to_top = true;
 
         match search::start_search(
             &self.dir_tree,
