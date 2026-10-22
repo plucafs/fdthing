@@ -112,6 +112,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
         }
 
         let mut open_path: Option<PathBuf> = None;
+        let mut open_folder: Option<PathBuf> = None;
         let mut open_parent: Option<PathBuf> = None;
 
         // Results
@@ -131,6 +132,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                             date_w,
                             true,
                             &mut open_path,
+                            &mut open_folder,
                             &mut open_parent,
                         );
                     });
@@ -189,12 +191,15 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                 if name_resp.clicked() {
                                     open_path = Some(entry.path.clone());
                                 }
-                                if name_resp.secondary_clicked() {
-                                    open_parent = entry
-                                        .path
-                                        .parent()
-                                        .map(|p| p.to_path_buf());
-                                }
+                                name_resp.context_menu(|ui| {
+                                    item_context_menu(
+                                        ui,
+                                        entry,
+                                        &mut open_path,
+                                        &mut open_folder,
+                                        &mut open_parent,
+                                    );
+                                });
                             });
                         }
                         if app.results.len() > limit {
@@ -230,12 +235,15 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                             if resp.clicked() {
                                 open_path = Some(entry.path.clone());
                             }
-                            if resp.secondary_clicked() {
-                                open_parent = entry
-                                    .path
-                                    .parent()
-                                    .map(|p| p.to_path_buf());
-                            }
+                            resp.context_menu(|ui| {
+                                item_context_menu(
+                                    ui,
+                                    entry,
+                                    &mut open_path,
+                                    &mut open_folder,
+                                    &mut open_parent,
+                                );
+                            });
                         }
                         if app.results.len() > limit {
                             ui.colored_label(
@@ -263,7 +271,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 }
             }
         }
-        if let Some(p) = open_parent {
+        if let Some(p) = open_folder {
             match open::that(&p) {
                 Ok(()) => {
                     app.info_message =
@@ -275,7 +283,54 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 }
             }
         }
+        if let Some(p) = open_parent {
+            match open::that(&p) {
+                Ok(()) => {
+                    app.info_message =
+                        Some(format!("Opened parent folder {}", p.display()));
+                }
+                Err(e) => {
+                    app.error_message =
+                        Some(format!("Cannot open {}: {e}", p.display()));
+                }
+            }
+        }
     });
+}
+
+fn item_context_menu(
+    ui: &mut egui::Ui,
+    entry: &crate::types::ResultEntry,
+    open_path: &mut Option<PathBuf>,
+    open_folder: &mut Option<PathBuf>,
+    open_parent: &mut Option<PathBuf>,
+) {
+    if ui.button("Open").clicked() {
+        *open_path = Some(entry.path.clone());
+        ui.close_menu();
+    }
+    let folder = if entry.is_dir {
+        Some(entry.path.clone())
+    } else {
+        entry.path.parent().map(|p| p.to_path_buf())
+    };
+    let parent = folder
+        .as_ref()
+        .and_then(|f| f.parent().map(|p| p.to_path_buf()));
+    if ui
+        .add_enabled(folder.is_some(), egui::Button::new("Open folder"))
+        .clicked()
+    {
+        *open_folder = folder;
+        ui.close_menu();
+    }
+    if ui
+        .add_enabled(parent.is_some(), egui::Button::new("Open parent folder"))
+        .clicked()
+    {
+        *open_parent = parent;
+        ui.close_menu();
+    }
 }
 
 fn render_rows(
@@ -287,6 +342,7 @@ fn render_rows(
     date_w: f32,
     truncate: bool,
     open_path: &mut Option<PathBuf>,
+    open_folder: &mut Option<PathBuf>,
     open_parent: &mut Option<PathBuf>,
 ) {
     let limit = 10_000;
@@ -362,10 +418,15 @@ fn render_rows(
             if name_resp.clicked() {
                 *open_path = Some(entry.path.clone());
             }
-            if name_resp.secondary_clicked() {
-                *open_parent =
-                    entry.path.parent().map(|p| p.to_path_buf());
-            }
+            name_resp.context_menu(|ui| {
+                item_context_menu(
+                    ui,
+                    entry,
+                    open_path,
+                    open_folder,
+                    open_parent,
+                );
+            });
         });
     }
     if results.len() > limit {
