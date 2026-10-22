@@ -253,12 +253,12 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                     .sense(Sense::click())
                                     .selectable(false),
                             );
-                                ui.separator();
+                                // ui.separator();
                                 ui.add(
                                     egui::Label::new(parent)
                                         .selectable(false),
                                 );
-                                ui.separator();
+                                // ui.separator();
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(&size_str)
@@ -266,7 +266,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                     )
                                     .selectable(false),
                                 );
-                                ui.separator();
+                                // ui.separator();
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(&date_str)
