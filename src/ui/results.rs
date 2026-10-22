@@ -4,7 +4,7 @@ use eframe::egui;
 use egui::{Color32, CursorIcon, ScrollArea, Sense};
 
 use crate::app::FdGuiApp;
-use crate::types::{format_date, format_size, ResultView, SortOrder};
+use crate::types::{format_date, format_size, ResultView, SortOrder, TypeFilter};
 
 pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
     egui::CentralPanel::default().show(ctx, |ui| {
@@ -48,6 +48,67 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 app.needs_sort = true;
                 app.save_config();
             }
+            ui.separator();
+            ui.label("Filter by type:");
+            egui::ComboBox::from_id_salt("type_filter_combo")
+                .selected_text(app.type_filter.label())
+                .show_ui(ui, |ui| {
+                    for f in TypeFilter::ALL {
+                        ui.selectable_value(
+                            &mut app.type_filter,
+                            f,
+                            f.label(),
+                        );
+                    }
+                });
+            ui.separator();
+            ui.label("Filter by ext:");
+            let mut ext_counts: Vec<(String, usize)> = Vec::new();
+            for r in &app.results {
+                if r.is_dir {
+                    continue;
+                }
+                if let Some(ext) =
+                    r.path.extension().and_then(|e| e.to_str())
+                {
+                    let ext = ext.to_ascii_lowercase();
+                    match ext_counts
+                        .iter_mut()
+                        .find(|(k, _)| *k == ext)
+                    {
+                        Some((_, n)) => *n += 1,
+                        None => ext_counts.push((ext, 1)),
+                    }
+                }
+            }
+            ext_counts
+                .sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            let selected_ext = if app.ext_view_filter.is_empty() {
+                "All".to_string()
+            } else {
+                let count = ext_counts
+                    .iter()
+                    .find(|(k, _)| *k == app.ext_view_filter)
+                    .map(|(_, n)| *n)
+                    .unwrap_or(0);
+                format!(".{} ({count})", app.ext_view_filter)
+            };
+            egui::ComboBox::from_id_salt("ext_filter_combo")
+                .selected_text(selected_ext)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut app.ext_view_filter,
+                        String::new(),
+                        "All",
+                    );
+                    for (ext, count) in &ext_counts {
+                        ui.selectable_value(
+                            &mut app.ext_view_filter,
+                            ext.clone(),
+                            format!(".{ext} ({count})"),
+                        );
+                    }
+                });
         });
 
         // ── Messages ─────────────────────────────────────────────────────
@@ -116,6 +177,8 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
         let mut open_parent: Option<PathBuf> = None;
         let scroll_to_top = std::mem::take(&mut app.scroll_to_top);
         let mut selected_path = app.selected_path.clone();
+        let type_filter = app.type_filter;
+        let ext_filter = app.ext_view_filter.clone();
 
         // Results
         match app.result_view {
@@ -139,6 +202,8 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                         &mut open_folder,
                         &mut open_parent,
                         &mut selected_path,
+                        type_filter,
+                        &ext_filter,
                     );
                 });
             }
@@ -149,7 +214,12 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 }
                 scroll.show(ui, |ui| {
                     let limit = 10_000;
-                    for entry in app.results.iter().take(limit) {
+                    for entry in app
+                        .results
+                        .iter()
+                        .filter(|e| matches_filters(e, type_filter, &ext_filter))
+                        .take(limit)
+                    {
                         let icon = if entry.is_dir { "📁" } else { "📄" };
                         let file_name = entry
                             .path
@@ -166,19 +236,22 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                         let is_selected =
                             selected_path.as_ref() == Some(&entry.path);
 
-                        let mut frame = egui::Frame::new();
-                        if is_selected {
-                            frame = frame
-                                .fill(ui.visuals().selection.bg_fill);
-                        }
-                        frame.show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                let name = format!("{icon} {file_name}");
-                                let name_resp = ui.add(
-                                    egui::Label::new(name)
-                                        .sense(Sense::click())
-                                        .selectable(false),
-                                );
+                        ui.horizontal(|ui| {
+                            let name = format!("{icon} {file_name}");
+                            let name_text = if is_selected {
+                                egui::RichText::new(name)
+                                    .color(
+                                        ui.visuals().selection.stroke.color,
+                                    )
+                                    .strong()
+                            } else {
+                                egui::RichText::new(name)
+                            };
+                            let name_resp = ui.add(
+                                egui::Label::new(name_text)
+                                    .sense(Sense::click())
+                                    .selectable(false),
+                            );
                                 ui.separator();
                                 ui.add(
                                     egui::Label::new(parent)
@@ -206,9 +279,8 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                 if name_resp.clicked() {
                                     selected_path =
                                         Some(entry.path.clone());
-                                }
-                                if name_resp.double_clicked() {
-                                    open_path = Some(entry.path.clone());
+                                    open_path =
+                                        Some(entry.path.clone());
                                 }
                                 name_resp.context_menu(|ui| {
                                     item_context_menu(
@@ -219,12 +291,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                         &mut open_parent,
                                     );
                                 });
-                                ui.allocate_space(egui::vec2(
-                                    ui.available_width(),
-                                    0.0,
-                                ));
                             });
-                        });
                     }
                     if app.results.len() > limit {
                         ui.colored_label(
@@ -245,7 +312,12 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 scroll.show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let limit = 10_000;
-                    for entry in app.results.iter().take(limit) {
+                    for entry in app
+                        .results
+                        .iter()
+                        .filter(|e| matches_filters(e, type_filter, &ext_filter))
+                        .take(limit)
+                    {
                         let icon =
                             if entry.is_dir { "📁" } else { "📄" };
                         let file_name = entry
@@ -258,39 +330,20 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                             .parent()
                             .map(|p| p.display().to_string())
                             .unwrap_or_default();
-                        let mut font_id = egui::FontSelection::Default
-                            .resolve(ui.style());
-                        font_id.size = (font_id.size * 0.85).round();
-                        let mut job =
-                            egui::text::LayoutJob::default();
-                        job.append(
-                            &format!("{icon} {file_name}"),
-                            0.0,
-                            egui::text::TextFormat {
-                                font_id: font_id.clone(),
-                                color: ui.visuals().text_color(),
-                                ..Default::default()
-                            },
-                        );
-                        job.append(
-                            &format!(" {parent}"),
-                            0.0,
-                            egui::text::TextFormat {
-                                font_id,
-                                color: ui
-                                    .visuals()
-                                    .weak_text_color(),
-                                ..Default::default()
-                            },
-                        );
                         let is_selected =
                             selected_path.as_ref() == Some(&entry.path);
-
-                        job.wrap.max_rows = 1;
-                        job.wrap.break_anywhere = true;
-                        job.wrap.max_width = ui.available_width();
-                        let galley =
-                            ui.fonts(|f| f.layout_job(job));
+                        let name_color = if is_selected {
+                            ui.visuals().selection.stroke.color
+                        } else {
+                            ui.visuals().text_color()
+                        };
+                        let galley = layout_compact_row(
+                            ui,
+                            icon,
+                            file_name,
+                            &parent,
+                            name_color,
+                        );
                         let (rect, resp) = ui.allocate_exact_size(
                             egui::vec2(
                                 ui.available_width(),
@@ -300,17 +353,20 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                         );
                         let resp = resp
                             .on_hover_cursor(CursorIcon::PointingHand);
-                        if is_selected || resp.hovered() {
-                            ui.painter().rect_filled(
-                                rect,
-                                0.0,
-                                if is_selected {
-                                    ui.visuals().selection.bg_fill
-                                } else {
-                                    ui.visuals().widgets.hovered.bg_fill
-                                },
-                            );
-                        }
+                        let galley = if !is_selected && resp.hovered()
+                        {
+                            let hover_color =
+                                ui.style().interact(&resp).text_color();
+                            layout_compact_row(
+                                ui,
+                                icon,
+                                file_name,
+                                &parent,
+                                hover_color,
+                            )
+                        } else {
+                            galley
+                        };
                         ui.painter().galley(
                             rect.left_top(),
                             galley,
@@ -319,8 +375,6 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                         if resp.clicked() {
                             selected_path =
                                 Some(entry.path.clone());
-                        }
-                        if resp.double_clicked() {
                             open_path = Some(entry.path.clone());
                         }
                         resp.context_menu(|ui| {
@@ -386,6 +440,39 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
             }
         }
     });
+}
+
+fn matches_filters(
+    entry: &crate::types::ResultEntry,
+    type_filter: TypeFilter,
+    ext_filter: &str,
+) -> bool {
+    if !matches_type_filter(entry, type_filter) {
+        return false;
+    }
+    if ext_filter.is_empty() {
+        return true;
+    }
+    if entry.is_dir {
+        return false;
+    }
+    entry
+        .path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case(ext_filter))
+        .unwrap_or(false)
+}
+
+fn matches_type_filter(
+    entry: &crate::types::ResultEntry,
+    filter: TypeFilter,
+) -> bool {
+    match filter {
+        TypeFilter::All => true,
+        TypeFilter::Files => !entry.is_dir,
+        TypeFilter::Folders => entry.is_dir,
+    }
 }
 
 fn item_context_menu(
@@ -459,9 +546,15 @@ fn render_rows(
     open_folder: &mut Option<PathBuf>,
     open_parent: &mut Option<PathBuf>,
     selected_path: &mut Option<PathBuf>,
+    type_filter: TypeFilter,
+    ext_filter: &str,
 ) {
     let limit = 10_000;
-    for entry in results.iter().take(limit) {
+    for entry in results
+        .iter()
+        .filter(|e| matches_filters(e, type_filter, ext_filter))
+        .take(limit)
+    {
         let is_selected = selected_path.as_ref() == Some(&entry.path);
         let icon = if entry.is_dir { "📁" } else { "📄" };
         let file_name = entry
@@ -477,14 +570,16 @@ fn render_rows(
         };
         let date_str = format_date(entry.modified);
 
-        let mut frame = egui::Frame::new();
-        if is_selected {
-            frame = frame.fill(ui.visuals().selection.bg_fill);
-        }
-        frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
+        ui.horizontal(|ui| {
             let name = format!("{icon} {file_name}");
-            let mut name_label = egui::Label::new(name)
+            let name_text = if is_selected {
+                egui::RichText::new(name)
+                    .color(ui.visuals().selection.stroke.color)
+                    .strong()
+            } else {
+                egui::RichText::new(name)
+            };
+            let mut name_label = egui::Label::new(name_text)
                 .sense(Sense::click())
                 .selectable(false);
             if truncate {
@@ -538,8 +633,6 @@ fn render_rows(
                 name_resp.on_hover_cursor(CursorIcon::PointingHand);
             if name_resp.clicked() {
                 *selected_path = Some(entry.path.clone());
-            }
-            if name_resp.double_clicked() {
                 *open_path = Some(entry.path.clone());
             }
             name_resp.context_menu(|ui| {
@@ -550,8 +643,6 @@ fn render_rows(
                     open_folder,
                     open_parent,
                 );
-            });
-            ui.allocate_space(egui::vec2(ui.available_width(), 0.0));
             });
         });
     }
@@ -564,4 +655,38 @@ fn render_rows(
             ),
         );
     }
+}
+
+fn layout_compact_row(
+    ui: &egui::Ui,
+    icon: &str,
+    file_name: &str,
+    parent: &str,
+    name_color: Color32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut font_id = egui::FontSelection::Default.resolve(ui.style());
+    font_id.size = (font_id.size * 0.85).round();
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &format!("{icon} {file_name}"),
+        0.0,
+        egui::text::TextFormat {
+            font_id: font_id.clone(),
+            color: name_color,
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!(" {parent}"),
+        0.0,
+        egui::text::TextFormat {
+            font_id,
+            color: ui.visuals().weak_text_color(),
+            ..Default::default()
+        },
+    );
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.max_width = ui.available_width();
+    ui.fonts(|f| f.layout_job(job))
 }

@@ -271,3 +271,24 @@ impl ResultView {
         }
     }
 }
+
+#[derive(PartialEq, Eq, Clone, Copy, Default)]
+pub enum TypeFilter {
+    #[default]
+    All,
+    Files,
+    Folders,
+}
+
+impl TypeFilter {
+    pub const ALL: [TypeFilter; 3] =
+        [TypeFilter::All, TypeFilter::Files, TypeFilter::Folders];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TypeFilter::All => "All",
+            TypeFilter::Files => "Files",
+            TypeFilter::Folders => "Folders",
+        }
+    }
+}

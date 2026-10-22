@@ -7,7 +7,7 @@ use eframe::egui;
 use crate::search;
 use crate::types::{
     config_path, load_config, DirTree, FocusTarget, PersistedConfig, ResultEntry, ResultView,
-    SearchDir, SearchStatus, SortOrder,
+    SearchDir, SearchStatus, SortOrder, TypeFilter,
 };
 
 pub struct FdGuiApp {
@@ -30,6 +30,8 @@ pub struct FdGuiApp {
     // ── Results presentation ─────────────────────────────────────────────
     pub sort_order: SortOrder,
     pub needs_sort: bool,
+    pub type_filter: TypeFilter,
+    pub ext_view_filter: String,
 
     // ── Appearance ───────────────────────────────────────────────────────
     pub ui_scale: f32,
@@ -71,6 +73,8 @@ impl FdGuiApp {
             exclude_filter: String::new(),
             sort_order: SortOrder::NameAsc,
             needs_sort: false,
+            type_filter: TypeFilter::All,
+            ext_view_filter: String::new(),
             ui_scale: 1.40,
             light_mode: false,
             result_view: ResultView::Aligned,
