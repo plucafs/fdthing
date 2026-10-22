@@ -336,10 +336,6 @@ fn item_context_menu(
     open_folder: &mut Option<PathBuf>,
     open_parent: &mut Option<PathBuf>,
 ) {
-    if ui.button("Open").clicked() {
-        *open_path = Some(entry.path.clone());
-        ui.close_menu();
-    }
     let folder = if entry.is_dir {
         Some(entry.path.clone())
     } else {
@@ -348,18 +344,46 @@ fn item_context_menu(
     let parent = folder
         .as_ref()
         .and_then(|f| f.parent().map(|p| p.to_path_buf()));
+
+    if ui.button("Open").clicked() {
+        *open_path = Some(entry.path.clone());
+        ui.close_menu();
+    }
     if ui
         .add_enabled(folder.is_some(), egui::Button::new("Open folder"))
         .clicked()
     {
-        *open_folder = folder;
+        *open_folder = folder.clone();
         ui.close_menu();
     }
     if ui
         .add_enabled(parent.is_some(), egui::Button::new("Open parent folder"))
         .clicked()
     {
-        *open_parent = parent;
+        *open_parent = parent.clone();
+        ui.close_menu();
+    }
+
+    ui.separator();
+
+    if ui.button("Copy path").clicked() {
+        ui.ctx().copy_text(entry.path.display().to_string());
+        ui.close_menu();
+    }
+    if ui
+        .add_enabled(folder.is_some(), egui::Button::new("Copy folder"))
+        .clicked()
+    {
+        ui.ctx()
+            .copy_text(folder.unwrap().display().to_string());
+        ui.close_menu();
+    }
+    if ui
+        .add_enabled(parent.is_some(), egui::Button::new("Copy parent folder"))
+        .clicked()
+    {
+        ui.ctx()
+            .copy_text(parent.unwrap().display().to_string());
         ui.close_menu();
     }
 }
