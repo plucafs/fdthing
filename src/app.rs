@@ -46,6 +46,7 @@ pub struct FdGuiApp {
 
     // ── UI state ─────────────────────────────────────────────────────────
     pub focus_after_search: Option<FocusTarget>,
+    pub select_all_on_focus: bool,
     pub pending_enable: Vec<(u64, bool)>,
     pub show_about: bool,
 }
@@ -78,6 +79,7 @@ impl FdGuiApp {
             error_message: None,
             info_message: None,
             focus_after_search: Some(FocusTarget::Pattern),
+            select_all_on_focus: true,
             pending_enable: Vec::new(),
             show_about: false,
         };
@@ -195,10 +197,14 @@ impl eframe::App for FdGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Sync state
         self.ui_scale = ctx.zoom_factor();
-        ctx.set_visuals(if self.light_mode {
-            egui::Visuals::light()
-        } else {
-            egui::Visuals::dark()
+        ctx.style_mut(|s| {
+            s.visuals = if self.light_mode {
+                egui::Visuals::light()
+            } else {
+                egui::Visuals::dark()
+            };
+            s.interaction.selectable_labels = false;
+            s.interaction.multi_widget_text_select = false;
         });
 
         self.collect_and_sort();

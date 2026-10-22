@@ -168,6 +168,10 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                     FocusTarget::Exclude => excl_id,
                 };
                 ui.memory_mut(|mem| mem.request_focus(id));
+                if app.select_all_on_focus && matches!(target, FocusTarget::Pattern) {
+                    select_all(ctx, pattern_id, &app.pattern);
+                    app.select_all_on_focus = false;
+                }
                 app.focus_after_search = None;
             }
 
