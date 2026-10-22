@@ -170,6 +170,23 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 ui.memory_mut(|mem| mem.request_focus(id));
                 app.focus_after_search = None;
             }
+
+            // ── Ctrl+F: focus pattern input and select all ──────────────
+            if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+                ui.memory_mut(|mem| mem.request_focus(pattern_id));
+                select_all(ctx, pattern_id, &app.pattern);
+            }
         });
     });
+}
+
+fn select_all(ctx: &egui::Context, id: egui::Id, text: &str) {
+    let end = text.chars().count();
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(end),
+        )));
+        state.store(ctx, id);
+    }
 }
