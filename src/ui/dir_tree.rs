@@ -11,7 +11,6 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
         .min_width(280.0)
         .show(ctx, |ui| {
             ui.heading("Search Directories");
-            ui.separator();
 
             // ── Add directory ────────────────────────────────────────────
             ui.horizontal(|ui| {
@@ -149,6 +148,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                 egui::Label::new(&path_text)
                                     .selectable(false),
                             );
+                            // ui.add_space(500.00);
                             if ui.button("🗑").clicked() {
                                 del = true;
                             }

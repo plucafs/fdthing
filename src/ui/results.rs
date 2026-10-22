@@ -27,7 +27,8 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                     ));
                 }
             }
-            ui.separator();
+        });
+        ui.horizontal( |ui| {
             ui.label("Sort:");
             let mut sort_order = app.sort_order;
             let mut changed = false;
@@ -49,7 +50,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 app.save_config();
             }
             ui.separator();
-            ui.label("Filter by type:");
+            ui.label("Type:");
             egui::ComboBox::from_id_salt("type_filter_combo")
                 .selected_text(app.type_filter.label())
                 .show_ui(ui, |ui| {
@@ -62,7 +63,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                     }
                 });
             ui.separator();
-            ui.label("Filter by ext:");
+            ui.label("Ext:");
             let mut ext_counts: Vec<(String, usize)> = Vec::new();
             for r in &app.results {
                 if r.is_dir {
