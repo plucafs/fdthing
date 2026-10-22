@@ -98,7 +98,6 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
             let mut new_collapsed: Vec<(usize, bool)> = Vec::new();
 
             ScrollArea::vertical()
-                .max_height(200.0)
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     // ── Ungroup drop target ──────────────────────────────
