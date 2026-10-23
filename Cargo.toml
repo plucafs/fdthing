@@ -19,11 +19,6 @@ dirs = "5"
 inherits = "release"
 lto = "thin"
 
-# [package.metadata.dist.changelog]
-# # Specifica che il changelog è gestito da git-cliff
-# command = "git-cliff"
-# args = ["--latest", "--strip", "header"]
-
 [package.metadata.dist.changelog]
-command = "sh"
-args = ["-c", "git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --pretty=format:'- %s' 2>/dev/null || git log --pretty=format:'- %s'"]
+command = "git-cliff"
+args = ["--latest", "--strip", "header"]
