@@ -177,6 +177,7 @@ impl DirTree {
 // ── Persistence ───────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct PersistedConfig {
     #[serde(default)]
     pub dir_tree: DirTree,
@@ -199,6 +200,28 @@ pub struct PersistedConfig {
     pub result_view: ResultView,
     #[serde(default)]
     pub saved_searches: Vec<String>,
+}
+
+impl Default for PersistedConfig {
+    fn default() -> Self {
+        Self {
+            dir_tree: DirTree::default(),
+            pattern: String::new(),
+            case_sensitive: false,
+            use_regex: false,
+            show_hidden: false,
+            dirs_only: false,
+            follow_symlinks: false,
+            respect_ignorefiles: true,
+            ext_filter: String::new(),
+            sort_order: SortOrder::NameAsc,
+            exclude_filter: String::new(),
+            empty_dirs: Vec::new(),
+            ui_scale: default_ui_scale(),
+            result_view: ResultView::default(),
+            saved_searches: Vec::new(),
+        }
+    }
 }
 
 fn default_ui_scale() -> f32 {
@@ -238,6 +261,25 @@ pub fn load_config() -> Option<PersistedConfig> {
     }
     cfg.dir_tree.next_id = max_id + 1;
     Some(cfg)
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::{PersistedConfig, ResultView, SortOrder};
+
+    #[test]
+    fn missing_config_fields_use_application_defaults() {
+        let cfg: PersistedConfig =
+            serde_json::from_str(r#"{"pattern":"needle"}"#).unwrap();
+
+        assert_eq!(cfg.pattern, "needle");
+        assert!(cfg.respect_ignorefiles);
+        assert!(matches!(cfg.sort_order, SortOrder::NameAsc));
+        assert_eq!(cfg.ui_scale, 1.4);
+        assert!(matches!(cfg.result_view, ResultView::Aligned));
+        assert!(cfg.saved_searches.is_empty());
+        assert_eq!(cfg.dir_tree.total_dirs(), 0);
+    }
 }
 
 // ── App enums ─────────────────────────────────────────────────────────────

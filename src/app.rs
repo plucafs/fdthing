@@ -199,6 +199,23 @@ impl FdGuiApp {
         }
     }
 
+    pub fn clear_search(&mut self) {
+        if let Some(flag) = &self.cancel_flag {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.cancel_flag = None;
+        self.result_receiver = None;
+        self.pattern.clear();
+        self.results.clear();
+        self.search_status = SearchStatus::Idle;
+        self.needs_sort = false;
+        self.error_message = None;
+        self.info_message = None;
+        self.selected_path = None;
+        self.scroll_to_top = true;
+        self.history_cursor = None;
+    }
+
     pub fn cycle_saved_searches(&mut self, toward_newest: bool) {
         if self.saved_searches.is_empty() {
             return;

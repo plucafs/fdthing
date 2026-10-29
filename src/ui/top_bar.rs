@@ -39,11 +39,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                 }
 
                 if ui.button("Clear").clicked() {
-                    app.pattern.clear();
-                    app.results.clear();
-                    app.search_status = crate::types::SearchStatus::Idle;
-                    app.error_message = None;
-                    app.info_message = None;
+                    app.clear_search();
                 }
             });
 
