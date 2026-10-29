@@ -168,9 +168,14 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                     FocusTarget::Exclude => excl_id,
                 };
                 ui.memory_mut(|mem| mem.request_focus(id));
-                if app.select_all_on_focus && matches!(target, FocusTarget::Pattern) {
-                    select_all(ctx, pattern_id, &app.pattern);
-                    app.select_all_on_focus = false;
+                if matches!(target, FocusTarget::Pattern) {
+                    if app.move_cursor_to_end_on_focus {
+                        move_cursor_to_end(ctx, pattern_id, &app.pattern);
+                        app.move_cursor_to_end_on_focus = false;
+                    } else if app.select_all_on_focus {
+                        select_all(ctx, pattern_id, &app.pattern);
+                        app.select_all_on_focus = false;
+                    }
                 }
                 app.focus_after_search = None;
             }
@@ -189,6 +194,16 @@ fn select_all(ctx: &egui::Context, id: egui::Id, text: &str) {
     if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
         state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
             egui::text::CCursor::new(0),
+            egui::text::CCursor::new(end),
+        )));
+        state.store(ctx, id);
+    }
+}
+
+fn move_cursor_to_end(ctx: &egui::Context, id: egui::Id, text: &str) {
+    let end = text.chars().count();
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
             egui::text::CCursor::new(end),
         )));
         state.store(ctx, id);

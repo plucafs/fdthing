@@ -197,6 +197,8 @@ pub struct PersistedConfig {
     pub ui_scale: f32,
     #[serde(default)]
     pub result_view: ResultView,
+    #[serde(default)]
+    pub saved_searches: Vec<String>,
 }
 
 fn default_ui_scale() -> f32 {

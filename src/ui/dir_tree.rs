@@ -4,7 +4,7 @@ use eframe::egui;
 use egui::{CursorIcon, ScrollArea, Sense};
 
 use crate::app::FdGuiApp;
-use crate::types::{DirGroup, SearchDir};
+use crate::types::{DirGroup, FocusTarget, SearchDir};
 
 pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
     egui::SidePanel::left("dir_panel")
@@ -96,8 +96,15 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
             let mut new_group_states: Vec<(usize, bool)> = Vec::new();
             let mut new_collapsed: Vec<(usize, bool)> = Vec::new();
 
+            let saved_section_height = ui.available_height().min(220.0);
+            let tree_height = (ui.available_height()
+                - saved_section_height
+                - ui.spacing().item_spacing.y)
+                .max(0.0);
+
             ScrollArea::vertical()
                 .auto_shrink([false; 2])
+                .max_height(tree_height)
                 .show(ui, |ui| {
                     // ── Ungroup drop target ──────────────────────────────
                     let ungroup_id = egui::Id::new("ungroup_target");
@@ -292,6 +299,62 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                         }
                     }
                 });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.heading("Saved searches");
+                ui.weak("Ctrl+Up/Down");
+            });
+            let saved_searches = app.saved_searches.clone();
+            let mut remove_search = None;
+            ScrollArea::vertical()
+                .id_salt("saved_searches")
+                .auto_shrink([false; 2])
+                .max_height((saved_section_height - 36.0).max(0.0))
+                .show(ui, |ui| {
+                    if saved_searches.is_empty() {
+                        ui.weak("No saved searches");
+                    }
+                    for (index, pattern) in saved_searches.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("🗑").clicked() {
+                                        remove_search = Some(index);
+                                    }
+                                    let response = ui.add_sized(
+                                        egui::vec2(
+                                            ui.available_width(),
+                                            ui.spacing().interact_size.y,
+                                        ),
+                                        egui::Label::new(pattern)
+                                            .truncate()
+                                            .sense(Sense::click())
+                                            .selectable(false),
+                                    );
+                                    let response = response
+                                        .on_hover_text(pattern)
+                                        .on_hover_cursor(CursorIcon::PointingHand);
+                                    if response.clicked() {
+                                        app.pattern.clone_from(pattern);
+                                        app.history_cursor = Some(index);
+                                        app.focus_after_search =
+                                            Some(FocusTarget::Pattern);
+                                        app.select_all_on_focus = false;
+                                        app.move_cursor_to_end_on_focus = true;
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+
+            if let Some(index) = remove_search {
+                app.saved_searches.remove(index);
+                app.history_cursor = None;
+                app.save_config();
+            }
 
             // ── Apply deferred actions ───────────────────────────────────
             let pending = std::mem::take(&mut app.pending_enable);

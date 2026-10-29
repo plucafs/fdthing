@@ -18,6 +18,8 @@ pub struct FdGuiApp {
 
     // ── Search parameters ────────────────────────────────────────────────
     pub pattern: String,
+    pub saved_searches: Vec<String>,
+    pub history_cursor: Option<usize>,
     pub case_sensitive: bool,
     pub use_regex: bool,
     pub show_hidden: bool,
@@ -49,6 +51,7 @@ pub struct FdGuiApp {
     // ── UI state ─────────────────────────────────────────────────────────
     pub focus_after_search: Option<FocusTarget>,
     pub select_all_on_focus: bool,
+    pub move_cursor_to_end_on_focus: bool,
     pub selected_path: Option<PathBuf>,
     pub scroll_to_top: bool,
     pub pending_enable: Vec<(u64, bool)>,
@@ -63,6 +66,8 @@ impl FdGuiApp {
             new_dir_path: String::new(),
             new_group_name: String::new(),
             pattern: String::new(),
+            saved_searches: Vec::new(),
+            history_cursor: None,
             case_sensitive: false,
             use_regex: false,
             show_hidden: false,
@@ -86,6 +91,7 @@ impl FdGuiApp {
             info_message: None,
             focus_after_search: Some(FocusTarget::Pattern),
             select_all_on_focus: true,
+            move_cursor_to_end_on_focus: false,
             selected_path: None,
             scroll_to_top: false,
             pending_enable: Vec::new(),
@@ -95,6 +101,7 @@ impl FdGuiApp {
         if let Some(cfg) = load_config() {
             app.dir_tree = cfg.dir_tree;
             app.pattern = cfg.pattern;
+            app.saved_searches = cfg.saved_searches;
             app.case_sensitive = cfg.case_sensitive;
             app.use_regex = cfg.use_regex;
             app.show_hidden = cfg.show_hidden;
@@ -139,6 +146,7 @@ impl FdGuiApp {
             sort_order: self.sort_order,
             ui_scale: self.ui_scale,
             result_view: self.result_view,
+            saved_searches: self.saved_searches.clone(),
             empty_dirs: Vec::new(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&cfg) {
@@ -147,6 +155,12 @@ impl FdGuiApp {
     }
 
     pub fn start_search(&mut self) {
+        if !self.pattern.trim().is_empty() {
+            self.saved_searches.retain(|search| search != &self.pattern);
+            self.saved_searches.insert(0, self.pattern.clone());
+            self.history_cursor = None;
+        }
+
         // Cancel previous
         if let Some(ref flag) = self.cancel_flag {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -158,6 +172,8 @@ impl FdGuiApp {
         self.needs_sort = false;
         self.selected_path = None;
         self.scroll_to_top = true;
+
+        self.save_config();
 
         match search::start_search(
             &self.dir_tree,
@@ -175,12 +191,34 @@ impl FdGuiApp {
                 self.search_status = status;
                 self.cancel_flag = Some(cancel);
                 self.result_receiver = Some(rx);
-                self.save_config();
             }
             Err(msg) => {
                 self.error_message = Some(msg);
                 self.search_status = SearchStatus::Idle;
             }
+        }
+    }
+
+    pub fn cycle_saved_searches(&mut self, toward_newest: bool) {
+        if self.saved_searches.is_empty() {
+            return;
+        }
+
+        let index = match (self.history_cursor, toward_newest) {
+            (None, true) => Some(0),
+            (None, false) => None,
+            (Some(index), true) => Some(index.saturating_sub(1)),
+            (Some(index), false) => {
+                Some((index + 1).min(self.saved_searches.len() - 1))
+            }
+        };
+
+        if let Some(index) = index {
+            self.history_cursor = Some(index);
+            self.pattern.clone_from(&self.saved_searches[index]);
+            self.focus_after_search = Some(FocusTarget::Pattern);
+            self.select_all_on_focus = false;
+            self.move_cursor_to_end_on_focus = true;
         }
     }
 
@@ -224,6 +262,18 @@ impl eframe::App for FdGuiApp {
         }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Q)) {
             ctx.send_viewport_cmd(egui::viewport::ViewportCommand::Close);
+        }
+        let pattern_input_id = egui::Id::new("pattern_input");
+        if ctx.memory(|mem| mem.has_focus(pattern_input_id)) {
+            let history_up = ctx
+                .input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::ArrowDown));
+            let history_down = ctx
+                .input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::ArrowUp));
+            if history_up {
+                self.cycle_saved_searches(true);
+            } else if history_down {
+                self.cycle_saved_searches(false);
+            }
         }
 
         // Apply pending enables
