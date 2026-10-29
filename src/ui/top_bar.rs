@@ -138,6 +138,8 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                     &mut app.ext_filter_modal_open,
                     true,
                 );
+            });
+            ui.horizontal_wrapped(|ui| {
                 filters_changed |= crate::ui::filter_chips::token_filter_ui(
                     ctx,
                     ui,
@@ -147,8 +149,7 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                     &mut app.exclude_add_input,
                     &mut app.exclude_filter_modal_open,
                     false,
-                );
-            });
+            )});
             if filters_changed {
                 app.save_config();
             }
