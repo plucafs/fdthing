@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
+use std::{collections::HashSet, path::PathBuf};
 
 use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
@@ -27,7 +28,7 @@ pub fn start_search(
     ),
     String,
 > {
-    let search_paths = dir_tree.enabled_paths();
+    let search_paths = prune_overlapping_roots(dir_tree.enabled_paths());
 
     if search_paths.is_empty() {
         return Err("No directories enabled for search.".into());
@@ -81,6 +82,7 @@ pub fn start_search(
     let exts = exts.to_vec();
 
     thread::spawn(move || {
+        let mut sent_paths = HashSet::new();
         for result in builder.build() {
             if cancel_clone.load(Ordering::Relaxed) {
                 return;
@@ -129,7 +131,9 @@ pub fn start_search(
                                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                 .map_or(0, |d| d.as_secs() as i64),
                         };
-                        let _ = tx.send(entry);
+                        if sent_paths.insert(entry.path.clone()) {
+                            let _ = tx.send(entry);
+                        }
                     }
                 }
             }
@@ -137,6 +141,30 @@ pub fn start_search(
     });
 
     Ok((SearchStatus::Searching, cancel, rx))
+}
+
+fn prune_overlapping_roots(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if seen.insert(canonical.clone()) {
+            unique.push((path, canonical));
+        }
+    }
+
+    unique
+        .iter()
+        .enumerate()
+        .filter(|(index, (_, candidate))| {
+            !unique.iter().enumerate().any(|(other_index, (_, root))| {
+                index != &other_index
+                    && candidate.as_path() != root.as_path()
+                    && candidate.starts_with(root)
+            })
+        })
+        .map(|(_, (path, _))| path.clone())
+        .collect()
 }
 
 pub fn collect_results(
@@ -178,5 +206,97 @@ pub fn apply_sort(results: &mut Vec<ResultEntry>, sort_order: SortOrder) {
         SortOrder::ModifiedDesc => {
             results.sort_by_key(|e| Reverse(e.modified))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::types::{DirTree, SearchDir};
+
+    use super::{prune_overlapping_roots, start_search};
+
+    fn temp_dir() -> PathBuf {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "fdthing-search-test-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn overlapping_and_duplicate_roots_are_pruned() {
+        let base = temp_dir();
+        let root = base.join("root");
+        let child = root.join("child");
+        let sibling = base.join("sibling");
+        fs::create_dir_all(&child).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+
+        let roots = prune_overlapping_roots(vec![
+            child,
+            root.clone(),
+            root.clone(),
+            sibling.clone(),
+        ]);
+
+        assert_eq!(roots, vec![root.clone(), sibling]);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn overlapping_search_roots_do_not_duplicate_results() {
+        let root = temp_dir();
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let root_match = root.join("needle-root.txt");
+        let child_match = child.join("needle-child.txt");
+        fs::write(&root_match, "").unwrap();
+        fs::write(&child_match, "").unwrap();
+
+        let dir_tree = DirTree {
+            free: vec![
+                SearchDir {
+                    id: 0,
+                    path: root.clone(),
+                    enabled: true,
+                },
+                SearchDir {
+                    id: 1,
+                    path: child,
+                    enabled: true,
+                },
+            ],
+            groups: Vec::new(),
+            next_id: 2,
+        };
+        let (_, _cancel, receiver) = start_search(
+            &dir_tree,
+            "needle",
+            false,
+            false,
+            false,
+            false,
+            false,
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+
+        let results: Vec<_> = receiver.into_iter().map(|entry| entry.path).collect();
+        let unique: HashSet<_> = results.iter().cloned().collect();
+        assert_eq!(results.len(), 2);
+        assert_eq!(unique.len(), 2);
+        assert!(unique.contains(&root_match));
+        assert!(unique.contains(&child_match));
+        fs::remove_dir_all(root).unwrap();
     }
 }
