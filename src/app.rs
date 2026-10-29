@@ -7,7 +7,7 @@ use eframe::egui;
 use crate::search;
 use crate::types::{
     config_path, load_config, DirTree, FocusTarget, PersistedConfig, ResultEntry, ResultView,
-    SearchDir, SearchStatus, SortOrder, TypeFilter,
+    SearchDir, SearchStatus, SortOrder, TokenFilter, TypeFilter,
 };
 
 pub struct FdGuiApp {
@@ -26,8 +26,12 @@ pub struct FdGuiApp {
     pub dirs_only: bool,
     pub follow_symlinks: bool,
     pub respect_ignorefiles: bool,
-    pub ext_filter: String,
-    pub exclude_filter: String,
+    pub ext_tokens: TokenFilter,
+    pub exclude_tokens: TokenFilter,
+    pub ext_add_input: String,
+    pub exclude_add_input: String,
+    pub ext_filter_modal_open: bool,
+    pub exclude_filter_modal_open: bool,
 
     // ── Results presentation ─────────────────────────────────────────────
     pub sort_order: SortOrder,
@@ -74,8 +78,12 @@ impl FdGuiApp {
             dirs_only: false,
             follow_symlinks: false,
             respect_ignorefiles: true,
-            ext_filter: String::new(),
-            exclude_filter: String::new(),
+            ext_tokens: TokenFilter::default(),
+            exclude_tokens: TokenFilter::default(),
+            ext_add_input: String::new(),
+            exclude_add_input: String::new(),
+            ext_filter_modal_open: false,
+            exclude_filter_modal_open: false,
             sort_order: SortOrder::NameAsc,
             needs_sort: false,
             type_filter: TypeFilter::All,
@@ -108,8 +116,8 @@ impl FdGuiApp {
             app.dirs_only = cfg.dirs_only;
             app.follow_symlinks = cfg.follow_symlinks;
             app.respect_ignorefiles = cfg.respect_ignorefiles;
-            app.ext_filter = cfg.ext_filter;
-            app.exclude_filter = cfg.exclude_filter;
+            app.ext_tokens = cfg.ext_tokens;
+            app.exclude_tokens = cfg.exclude_tokens;
             app.sort_order = cfg.sort_order;
             app.ui_scale = cfg.ui_scale;
             app.result_view = cfg.result_view;
@@ -141,8 +149,10 @@ impl FdGuiApp {
             dirs_only: self.dirs_only,
             follow_symlinks: self.follow_symlinks,
             respect_ignorefiles: self.respect_ignorefiles,
-            ext_filter: self.ext_filter.clone(),
-            exclude_filter: self.exclude_filter.clone(),
+            ext_tokens: self.ext_tokens.clone(),
+            exclude_tokens: self.exclude_tokens.clone(),
+            ext_filter: self.ext_tokens.active.join(", "),
+            exclude_filter: self.exclude_tokens.active.join(", "),
             sort_order: self.sort_order,
             ui_scale: self.ui_scale,
             result_view: self.result_view,
@@ -183,8 +193,8 @@ impl FdGuiApp {
             self.show_hidden,
             self.follow_symlinks,
             self.respect_ignorefiles,
-            &self.ext_filter,
-            &self.exclude_filter,
+            &self.ext_tokens.active,
+            &self.exclude_tokens.active,
             self.dirs_only,
         ) {
             Ok((status, cancel, rx)) => {

@@ -16,8 +16,8 @@ pub fn start_search(
     show_hidden: bool,
     follow_symlinks: bool,
     respect_ignorefiles: bool,
-    ext_filter: &str,
-    exclude_filter: &str,
+    exts: &[String],
+    exclude_globs: &[String],
     dirs_only: bool,
 ) -> Result<
     (
@@ -50,13 +50,6 @@ pub fn start_search(
         None
     };
 
-    let exts: Vec<String> = ext_filter
-        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
-        .map(|s| s.trim().trim_start_matches('.'))
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_lowercase())
-        .collect();
-
     let mut builder = WalkBuilder::new(&search_paths[0]);
     for p in &search_paths[1..] {
         builder.add(p);
@@ -69,14 +62,9 @@ pub fn start_search(
     builder.ignore(respect_ignorefiles);
     builder.max_depth(None);
 
-    let exclude_globs: Vec<&str> = exclude_filter
-        .split(|c: char| c == ',' || c == ';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
     if !exclude_globs.is_empty() {
         let mut ov = OverrideBuilder::new(".");
-        for glob in &exclude_globs {
+        for glob in exclude_globs {
             let _ = ov.add(&format!("!{glob}"));
         }
         if let Ok(ov) = ov.build() {
@@ -90,6 +78,7 @@ pub fn start_search(
 
     let pattern = pattern.to_string();
     let pattern_lower = pattern.to_lowercase();
+    let exts = exts.to_vec();
 
     thread::spawn(move || {
         for result in builder.build() {
@@ -104,7 +93,11 @@ pub fn start_search(
                         .and_then(|e| e.to_str())
                         .map(|e| {
                             let e = e.to_lowercase();
-                            exts.iter().any(|x| x == &e)
+                            exts.iter().any(|x| {
+                                x.trim()
+                                    .trim_start_matches('.')
+                                    .eq_ignore_ascii_case(&e)
+                            })
                         })
                         .unwrap_or(false);
                     if !ext_ok {

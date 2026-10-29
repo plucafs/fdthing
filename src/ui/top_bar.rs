@@ -5,9 +5,6 @@ use crate::types::{FocusTarget, ResultView};
 
 pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
     let pattern_id = egui::Id::new("pattern_input");
-    let ext_id = egui::Id::new("ext_textedit");
-    let excl_id = egui::Id::new("exclude_input");
-
     egui::TopBottomPanel::top("search_bar").show(ctx, |ui| {
         ui.vertical(|ui| {
             // ── Row 0: pattern + action buttons ──────────────────────────
@@ -129,41 +126,36 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
             });
 
             // ── Row 2: Ext + Exclude ─────────────────────────────────────
-            ui.horizontal(|ui| {
-                ui.label("Ext:");
-                let ext_resp = ui.add(
-                    egui::TextEdit::singleline(&mut app.ext_filter)
-                        .id(ext_id)
-                        .hint_text("rs, py, txt…"),
+            let mut filters_changed = false;
+            ui.horizontal_wrapped(|ui| {
+                filters_changed |= crate::ui::filter_chips::token_filter_ui(
+                    ctx,
+                    ui,
+                    "extension_filter",
+                    "Ext:",
+                    &mut app.ext_tokens,
+                    &mut app.ext_add_input,
+                    &mut app.ext_filter_modal_open,
+                    true,
                 );
-                if ext_resp.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    app.focus_after_search = Some(FocusTarget::Ext);
-                    app.start_search();
-                }
-                ui.label("Exclude:");
-                let excl_resp = ui.add(
-                    egui::TextEdit::singleline(&mut app.exclude_filter)
-                        .id(excl_id)
-                        .hint_text("target, *.log…"),
+                filters_changed |= crate::ui::filter_chips::token_filter_ui(
+                    ctx,
+                    ui,
+                    "exclude_filter",
+                    "Exclude:",
+                    &mut app.exclude_tokens,
+                    &mut app.exclude_add_input,
+                    &mut app.exclude_filter_modal_open,
+                    false,
                 );
-                if excl_resp.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    app.focus_after_search = Some(FocusTarget::Exclude);
-                    app.start_search();
-                }
             });
+            if filters_changed {
+                app.save_config();
+            }
 
             // ── Deferred focus ───────────────────────────────────────────
             if let Some(ref target) = app.focus_after_search {
-                let id = match target {
-                    FocusTarget::Pattern => pattern_id,
-                    FocusTarget::Ext => ext_id,
-                    FocusTarget::Exclude => excl_id,
-                };
-                ui.memory_mut(|mem| mem.request_focus(id));
+                ui.memory_mut(|mem| mem.request_focus(pattern_id));
                 if matches!(target, FocusTarget::Pattern) {
                     if app.move_cursor_to_end_on_focus {
                         move_cursor_to_end(ctx, pattern_id, &app.pattern);

@@ -174,6 +174,63 @@ impl DirTree {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TokenFilter {
+    pub active: Vec<String>,
+    pub known: Vec<String>,
+}
+
+impl TokenFilter {
+    pub fn add_token(&mut self, token: String) -> bool {
+        let mut changed = false;
+        if !self.known.contains(&token) {
+            self.known.push(token.clone());
+            self.known.sort();
+            changed = true;
+        }
+        if !self.active.contains(&token) {
+            self.active.push(token);
+            changed = true;
+        }
+        changed
+    }
+
+    pub fn set_active(&mut self, token: &str, active: bool) -> bool {
+        if active {
+            if self.active.iter().any(|known| known == token) {
+                false
+            } else {
+                self.active.push(token.to_string());
+                true
+            }
+        } else if let Some(index) = self.active.iter().position(|item| item == token) {
+            self.active.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn forget_token(&mut self, token: &str) -> bool {
+        let old_known_len = self.known.len();
+        let old_active_len = self.active.len();
+        self.known.retain(|item| item != token);
+        self.active.retain(|item| item != token);
+        old_known_len != self.known.len() || old_active_len != self.active.len()
+    }
+}
+
+pub fn normalize_extension_token(token: &str) -> Option<String> {
+    let token = token.trim().trim_start_matches('.').to_ascii_lowercase();
+    (!token.is_empty()).then_some(token)
+}
+
+pub fn normalize_exclude_token(token: &str) -> Option<String> {
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
 // ── Persistence ───────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
@@ -188,6 +245,11 @@ pub struct PersistedConfig {
     pub dirs_only: bool,
     pub follow_symlinks: bool,
     pub respect_ignorefiles: bool,
+    #[serde(default)]
+    pub ext_tokens: TokenFilter,
+    #[serde(default)]
+    pub exclude_tokens: TokenFilter,
+    // Legacy serialized filter strings retained for config migration.
     pub ext_filter: String,
     pub sort_order: SortOrder,
     #[serde(default)]
@@ -213,6 +275,8 @@ impl Default for PersistedConfig {
             dirs_only: false,
             follow_symlinks: false,
             respect_ignorefiles: true,
+            ext_tokens: TokenFilter::default(),
+            exclude_tokens: TokenFilter::default(),
             ext_filter: String::new(),
             sort_order: SortOrder::NameAsc,
             exclude_filter: String::new(),
@@ -235,6 +299,7 @@ pub fn config_path() -> Option<PathBuf> {
 pub fn load_config() -> Option<PersistedConfig> {
     let text = std::fs::read_to_string(config_path()?).ok()?;
     let mut cfg: PersistedConfig = serde_json::from_str(&text).ok()?;
+    migrate_legacy_filters(&mut cfg);
     // Migrate legacy flat list
     let empty_dirs = std::mem::take(&mut cfg.empty_dirs);
     if !empty_dirs.is_empty() && cfg.dir_tree.free.is_empty() {
@@ -263,9 +328,32 @@ pub fn load_config() -> Option<PersistedConfig> {
     Some(cfg)
 }
 
+fn migrate_legacy_filters(cfg: &mut PersistedConfig) {
+    if cfg.ext_tokens.active.is_empty() && cfg.ext_tokens.known.is_empty() {
+        for token in cfg
+            .ext_filter
+            .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        {
+            if let Some(token) = normalize_extension_token(token) {
+                cfg.ext_tokens.add_token(token);
+            }
+        }
+    }
+    if cfg.exclude_tokens.active.is_empty() && cfg.exclude_tokens.known.is_empty() {
+        for token in cfg.exclude_filter.split(|c: char| c == ',' || c == ';') {
+            if let Some(token) = normalize_exclude_token(token) {
+                cfg.exclude_tokens.add_token(token);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod config_tests {
-    use super::{PersistedConfig, ResultView, SortOrder};
+    use super::{
+        migrate_legacy_filters, normalize_exclude_token, normalize_extension_token,
+        PersistedConfig, ResultView, SortOrder,
+    };
 
     #[test]
     fn missing_config_fields_use_application_defaults() {
@@ -280,6 +368,40 @@ mod config_tests {
         assert!(cfg.saved_searches.is_empty());
         assert_eq!(cfg.dir_tree.total_dirs(), 0);
     }
+
+    #[test]
+    fn legacy_filter_strings_migrate_to_active_known_tokens() {
+        let mut cfg: PersistedConfig = serde_json::from_str(
+            r#"{"ext_filter":".RS, py;rs","exclude_filter":"target, *.log"}"#,
+        )
+        .unwrap();
+        migrate_legacy_filters(&mut cfg);
+
+        assert_eq!(cfg.ext_tokens.active, ["rs", "py"]);
+        assert_eq!(cfg.ext_tokens.known, ["py", "rs"]);
+        assert_eq!(cfg.exclude_tokens.active, ["target", "*.log"]);
+        assert_eq!(cfg.exclude_tokens.known, ["*.log", "target"]);
+    }
+
+    #[test]
+    fn migration_does_not_reactivate_intentionally_inactive_tokens() {
+        let mut cfg: PersistedConfig = serde_json::from_str(
+            r#"{"ext_filter":"rs","ext_tokens":{"active":[],"known":["pdf"]}}"#,
+        )
+        .unwrap();
+        migrate_legacy_filters(&mut cfg);
+
+        assert!(cfg.ext_tokens.active.is_empty());
+        assert_eq!(cfg.ext_tokens.known, ["pdf"]);
+    }
+
+    #[test]
+    fn filter_tokens_normalize_as_expected() {
+        assert_eq!(normalize_extension_token(" .PDF ").as_deref(), Some("pdf"));
+        assert_eq!(normalize_exclude_token(" *.log ").as_deref(), Some("*.log"));
+        assert_eq!(normalize_extension_token(" ... "), None);
+        assert_eq!(normalize_exclude_token(" "), None);
+    }
 }
 
 // ── App enums ─────────────────────────────────────────────────────────────
@@ -293,8 +415,6 @@ pub enum SearchStatus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     Pattern,
-    Ext,
-    Exclude,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Default)]
