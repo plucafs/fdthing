@@ -22,3 +22,7 @@ lto = "thin"
 [package.metadata.dist.changelog]
 command = "git-cliff"
 args = ["--latest", "--strip", "header"]
+
+[package.metadata.appimage]
+icon = "assets/icon_128.png"
+desktop_entry = "assets/fdthing.desktop"

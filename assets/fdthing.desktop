@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=fdthing
+GenericName=File Finder
+Comment=A graphical file finder for fd
+Exec=fdthing
+Icon=fdthing
+Type=Application
+Categories=Utility;FileTools;
+Terminal=false
+StartupWMClass=fdthing
