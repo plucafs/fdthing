@@ -19,6 +19,7 @@ pub struct FdGuiApp {
     // ── Search parameters ────────────────────────────────────────────────
     pub pattern: String,
     pub saved_searches: Vec<String>,
+    pub saved_search_filter: String,
     pub history_cursor: Option<usize>,
     pub case_sensitive: bool,
     pub use_regex: bool,
@@ -71,6 +72,7 @@ impl FdGuiApp {
             new_group_name: String::new(),
             pattern: String::new(),
             saved_searches: Vec::new(),
+            saved_search_filter: String::new(),
             history_cursor: None,
             case_sensitive: false,
             use_regex: false,

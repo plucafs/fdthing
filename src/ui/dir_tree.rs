@@ -303,25 +303,43 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.heading("Saved searches");
-                ui.weak("Ctrl+Up/Down");
+                // ui.weak("Ctrl+Up/Down");
             });
-            let saved_searches = app.saved_searches.clone();
+            ui.add(
+                egui::TextEdit::singleline(&mut app.saved_search_filter)
+                    .hint_text("Filter saved searches…")
+                    .desired_width(260.0),
+            );
+            let filter = app.saved_search_filter.trim().to_lowercase();
+            let saved_searches: Vec<(usize, String)> = app
+                .saved_searches
+                .iter()
+                .enumerate()
+                .filter(|(_, pattern)| {
+                    filter.is_empty() || pattern.to_lowercase().contains(&filter)
+                })
+                .map(|(index, pattern)| (index, pattern.clone()))
+                .collect();
             let mut remove_search = None;
             ScrollArea::vertical()
                 .id_salt("saved_searches")
                 .auto_shrink([false; 2])
-                .max_height((saved_section_height - 36.0).max(0.0))
+                .max_height((saved_section_height - 64.0).max(0.0))
                 .show(ui, |ui| {
                     if saved_searches.is_empty() {
-                        ui.weak("No saved searches");
+                        ui.weak(if app.saved_searches.is_empty() {
+                            "No saved searches"
+                        } else {
+                            "No matches"
+                        });
                     }
-                    for (index, pattern) in saved_searches.iter().enumerate() {
+                    for (index, pattern) in &saved_searches {
                         ui.horizontal(|ui| {
                             ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
+                                egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     if ui.button("🗑").clicked() {
-                                        remove_search = Some(index);
+                                        remove_search = Some(*index);
                                     }
                                     let response = ui.add_sized(
                                         egui::vec2(
@@ -338,11 +356,11 @@ pub fn show(ctx: &egui::Context, app: &mut FdGuiApp) {
                                         .on_hover_cursor(CursorIcon::PointingHand);
                                     if response.clicked() {
                                         app.pattern.clone_from(pattern);
-                                        app.history_cursor = Some(index);
                                         app.focus_after_search =
                                             Some(FocusTarget::Pattern);
                                         app.select_all_on_focus = false;
                                         app.move_cursor_to_end_on_focus = true;
+                                        app.start_search();
                                     }
                                 },
                             );
